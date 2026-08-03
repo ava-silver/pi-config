@@ -1,0 +1,25 @@
+{
+  "warnings": {
+    "anthropicExtraUsage": false
+  },
+  "lastChangelogVersion": "0.83.0",
+  "theme": "catppuccin-frappe",
+  "defaultThinkingLevel": "medium",
+  "quietStartup": true,
+  "hideThinkingBlock": false,
+  "packages": [
+    "npm:pi-btw",
+    "npm:pi-web-access",
+    "npm:pi-mcp-adapter",
+    "npm:pi-auto-rename",
+    "npm:pi-prompt-template-model",
+    "npm:@ff-labs/pi-fff",
+    "npm:pi-visualize-code-changes"
+  ],
+  "extensions": ["/Users/ava.silver/dotfiles/pi/extensions"],
+  "skills": ["/Users/ava.silver/dotfiles/pi/skills"],
+  "prompts": ["/Users/ava.silver/dotfiles/pi/prompts"],
+  "themes": ["/Users/ava.silver/dotfiles/pi/themes"],
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol"
+}
