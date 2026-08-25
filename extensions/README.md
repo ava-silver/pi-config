@@ -1,9 +1,5 @@
 # Pi extensions
 
-Local extensions loaded directly by `pi/settings.json`.
-
-## Extensions
-
 | Extension                   | Description                                                                              |
 | --------------------------- | ---------------------------------------------------------------------------------------- |
 | `agents-md.ts`              | Loads local and subdirectory `AGENTS.md` instructions into agent context.                |
