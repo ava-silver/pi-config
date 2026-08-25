@@ -2,6 +2,7 @@
 *
 
 !/.gitignore
+!/.pre-commit-config.yaml
 !/AGENTS.md
 !/keybindings.json
 !/mcp.json
