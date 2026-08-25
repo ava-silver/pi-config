@@ -21,19 +21,12 @@
     "../../go/src/github.com/DataDog/datadog-pi-packages/packages/dd-ai-gateway"
   ],
   "extensions": [
-    "~/dotfiles/pi/extensions",
     "-extensions/trajectory/index.ts"
   ],
   "skills": [
     "~/skills/skills",
     "~/dd/claude-marketplace/serverless/skills",
     "~/dd/experimental/users/ava.silver/ssi/skills/"
-  ],
-  "prompts": [
-    "~/dotfiles/pi/prompts"
-  ],
-  "themes": [
-    "~/dotfiles/pi/themes"
   ],
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-terra",

@@ -1,0 +1,22 @@
+# Ignore Pi runtime state by default.
+*
+
+!/.gitignore
+!/AGENTS.md
+!/keybindings.json
+!/mcp.json
+!/models.json
+!/pi-auto-rename.json
+!/settings.json
+!/setup.sh
+
+!/extensions/
+!/extensions/**
+/extensions/node_modules/
+/extensions/trajectory/
+
+!/prompts/
+!/prompts/**
+
+!/themes/
+!/themes/**

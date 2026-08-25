@@ -8,7 +8,7 @@ const ROOT = join(import.meta.dirname, "..");
 async function findNestedManifests(directory: string): Promise<string[]> {
 	const found: string[] = [];
 	for (const entry of await readdir(directory, { withFileTypes: true })) {
-		if (entry.name === "node_modules") continue;
+		if (entry.name === "node_modules" || entry.name === "trajectory") continue;
 		const path = join(directory, entry.name);
 		if (entry.isDirectory()) {
 			found.push(...(await findNestedManifests(path)));

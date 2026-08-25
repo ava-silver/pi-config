@@ -32,7 +32,7 @@
 
 ## Pi config
 
-- Pi loads extensions/themes/etc from `~/dotfiles/pi/` directly; use `/reload` after adding or changing an extension.
+- Pi loads extensions, prompts, and themes from `~/.pi/agent/` directly; use `/reload` after changing them.
 - All skills live in `~/skills/skills/` (also loads `~/dd/claude-marketplace/serverless/skills`)
 
 ## RTK (token-optimized command wrapper)

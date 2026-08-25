@@ -7,7 +7,7 @@
 		"check": "bun run format:check && bun run lint && bun run typecheck && bun run test",
 		"format": "oxfmt --write .",
 		"format:check": "oxfmt --check .",
-		"lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives .",
+		"lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives --ignore-pattern trajectory .",
 		"prepare": "effect-tsgo patch",
 		"test": "node --test --experimental-strip-types",
 		"typecheck": "tsc --noEmit"
