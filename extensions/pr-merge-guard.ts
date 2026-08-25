@@ -305,10 +305,10 @@ export default function (pi: ExtensionAPI): void {
 				gh(ctx.cwd, [...merge.globalOptions, "pr", "view", "--json", "author,headRefName"]),
 			]);
 			const details = JSON.parse(pr) as { author?: { login?: string }; headRefName?: string };
-			if (details.author?.login !== viewer || !details.headRefName?.startsWith("ava.silver/")) {
+			if (details.author?.login !== viewer || !details.headRefName?.startsWith(`${viewer}/`)) {
 				return {
 					block: true,
-					reason: "Only the authenticated user's ava.silver/* branch PR may be merged. Do not bypass this guard.",
+					reason: "Only the authenticated user's branch PR may be merged. Do not bypass this guard.",
 				};
 			}
 		} catch (error) {

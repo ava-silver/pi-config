@@ -1,8 +1,8 @@
 # Pi configuration
 
-This repository is a personal [Pi](https://pi.dev) configuration. It lives at `~/.pi/agent` so the tracked files are the configuration Pi uses.
+This repository provides a [Pi](https://pi.dev) configuration template. Install it at `~/.pi/agent`, where Pi loads its configuration.
 
-Use this repository as a starting point. Review and customize it before you run Pi.
+Review and customize it before you run Pi.
 
 ## Requirements
 
@@ -28,30 +28,6 @@ git clone <repository-url> ~/.pi/agent
 Copy only the runtime state you want to retain from the backup. Do not commit credentials or session data.
 
 The setup script installs extension dependencies and links `mcp.json` to `~/.config/mcp/mcp.json`.
-
-## Customize
-
-Search for machine- and user-specific values:
-
-```bash
-rg 'ava\.silver|DataDog|~/dd|~/skills' ~/.pi/agent
-```
-
-At minimum, review:
-
-- `settings.json` -- remove unavailable packages and skills, then select your providers and models.
-- `mcp.json` -- update the absolute Slack proxy path and remove MCP servers you do not use.
-- `AGENTS.md` -- replace the personal instructions with your own.
-- `prompts/` -- update references to skills that are not installed on your machine.
-
-Then validate the extensions:
-
-```bash
-cd ~/.pi/agent/extensions
-bun run check
-```
-
-Run `/reload` in Pi after you change extensions, prompts, themes, or settings.
 
 ## Add tracked files
 
