@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getTransientSegments } from "../shared/footer-segments.ts";
 import type { BackgroundHub } from "./src/hub.ts";
 import {
 	MAX_ARTIFACT_BYTES,
@@ -93,6 +94,7 @@ test("cancelling waits for buffered artifact output", async () => {
 	await cancel.execute("test", { ids: [started.details.id] });
 	const settled = await check.execute("test", { id: started.details.id });
 	assert.equal(settled.details.status, "error");
+	assert.equal(getTransientSegments().get("terminals"), undefined);
 	assert.ok((await fs.promises.readFile(outputPath)).length >= 65536);
 	await removeTerminalArtifactDirectory(path.dirname(outputPath));
 });

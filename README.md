@@ -2,8 +2,6 @@
 
 This repository provides a [Pi](https://pi.dev) configuration template. Install it at `~/.pi/agent`, where Pi loads its configuration.
 
-Review and customize it before you run Pi.
-
 ## Requirements
 
 Install Git, Pi, and [Bun](https://bun.com/).

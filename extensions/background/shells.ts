@@ -236,14 +236,14 @@ export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
 	// -- Status footer -------------------------------------------------------
 
 	const updateStatus = () => {
-		const all = [...terminals.values()];
-		if (all.length === 0) {
+		const visible = [...terminals.values()].filter((t) => !t.killRequested);
+		if (visible.length === 0) {
 			registerTransientSegment("terminals", null);
 			return;
 		}
-		const running = all.filter((t) => t.status === "running").length;
-		const failed = all.filter((t) => t.status === "error").length;
-		const done = all.length - running - failed;
+		const running = visible.filter((t) => t.status === "running").length;
+		const failed = visible.filter((t) => t.status === "error").length;
+		const done = visible.length - running - failed;
 		const parts: string[] = [];
 		if (running > 0) parts.push(`${running} running`);
 		if (done > 0) parts.push(`${done} done`);
