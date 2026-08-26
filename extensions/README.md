@@ -15,6 +15,7 @@
 | `powerline.ts`              | Replaces the default footer with a Powerline-style status bar.                           |
 | `pr-feedback.ts`            | Fetches pull request feedback and asks the agent to assess it.                           |
 | `pr-merge-guard.ts`         | Allows merging only the authenticated user's current-branch pull request.                |
+| `python-repl/`              | Runs stateful Python in a temporary virtual environment.                                 |
 | `read-aloud/`               | Rewrites and reads the latest response aloud.                                            |
 | `session-secret-redaction/` | Redacts detected secrets from Pi session files.                                          |
 | `shell.ts`                  | Runs shell commands with zsh aliases and escalating cancellation.                        |
