@@ -7,6 +7,7 @@
 | `auto-update.ts`            | Checks for and installs Pi package updates once per day.                                 |
 | `background/`               | Runs subagents and shell commands in the background.                                     |
 | `caffeinate.ts`             | Keeps the display awake while the agent runs.                                            |
+| `web-search/`               | Provides a compact wrapper around configured web search.                                 |
 | `continue.ts`               | Adds `Ctrl+N` to send or queue `continue`.                                               |
 | `custom-header.ts`          | Renders a custom Pi startup header.                                                      |
 | `google-style.ts`           | Applies Google developer documentation style to agent responses.                         |

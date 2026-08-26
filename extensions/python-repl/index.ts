@@ -4,10 +4,12 @@ import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,
+	highlightCode,
 	truncateTail,
 	withFileMutationQueue,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { PythonRepl, type ExecutionResult } from "./runtime.ts";
 
@@ -59,6 +61,11 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			code: Type.String({ description: "Python code to execute. Variables and imports persist across calls." }),
 		}),
+		renderCall(args, theme) {
+			const code = args.code ?? "";
+			const title = theme.fg("toolTitle", theme.bold("python_repl"));
+			return new Text(code ? `${title}\n${highlightCode(code, "python").join("\n")}` : title, 0, 0);
+		},
 		async execute(_id, params, signal) {
 			const result = await repl.execute(params.code, signal);
 			const output = await truncateOutput(formatExecution(result));
@@ -82,6 +89,11 @@ export default function (pi: ExtensionAPI) {
 				maxItems: 32,
 			}),
 		}),
+		renderCall(args, theme) {
+			const title = theme.fg("toolTitle", theme.bold("python_repl_install"));
+			const packages = args.packages?.map((value) => theme.fg("accent", value)).join(", ");
+			return new Text(packages ? `${title} ${packages}` : title, 0, 0);
+		},
 		async execute(_id, params, signal) {
 			const packages = params.packages.map((value) => value.trim());
 			if (packages.some((value) => value.length === 0)) throw new Error("Package names must not be empty.");
@@ -100,6 +112,9 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Clear all variables and imports from the stateful Python REPL. Installed packages remain available in its temporary virtual environment.",
 		parameters: Type.Object({}),
+		renderCall(_args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("python_repl_clear")), 0, 0);
+		},
 		async execute(_id, _params, signal) {
 			await repl.clear(signal);
 			return {
