@@ -1,3 +1,4 @@
+import { getEncoding } from "js-tiktoken";
 import {
 	sessionEntryToContextMessages,
 	type BuildSystemPromptOptions,
@@ -27,10 +28,12 @@ export type ContextAuditInput = {
 	contextEntries: SessionEntry[];
 };
 
-function chars(value: unknown): number {
-	if (typeof value === "string") return value.length;
+const tokenizer = getEncoding("o200k_base");
+
+function tokens(value: unknown): number {
 	try {
-		return JSON.stringify(value)?.length ?? 0;
+		const text = typeof value === "string" ? value : JSON.stringify(value);
+		return text === undefined ? 0 : tokenizer.encode(text).length;
 	} catch {
 		return 0;
 	}
@@ -76,7 +79,7 @@ function stackedBar(items: Metric[]): string {
 	return `<div class="stacked">${items
 		.map(
 			(item, index) =>
-				`<div style="width:${((item.value / total) * 100).toFixed(2)}%;--color:var(--chart-${(index % 6) + 1})" title="${escapeHtml(`${item.label}: ${count(item.value)} characters`)}"></div>`,
+				`<div style="width:${((item.value / total) * 100).toFixed(2)}%;--color:var(--chart-${(index % 6) + 1})" title="${escapeHtml(`${item.label}: ${count(item.value)} estimated tokens`)}"></div>`,
 		)
 		.join("")}</div><div class="legend">${items
 		.map(
@@ -120,70 +123,70 @@ export function contextAuditHtml(input: ContextAuditInput): string {
 	const messages = input.contextEntries.flatMap((entry) =>
 		sessionEntryToContextMessages(entry).map((message) => ({ entry, message })),
 	);
-	const toolChars = activeTools.reduce((sum, tool) => sum + chars(tool), 0);
-	const messageChars = messages.reduce((sum, item) => sum + chars(item.message), 0);
+	const toolTokens = activeTools.reduce((sum, tool) => sum + tokens(tool), 0);
+	const messageTokens = messages.reduce((sum, item) => sum + tokens(item.message), 0);
 	const usage = input.contextUsage;
 	const usageLabel = usage
 		? `${usage.tokens === null ? "Unknown" : `${count(usage.tokens)} tokens`} / ${count(usage.contextWindow)}${usage.percent === null ? "" : ` (${usage.percent.toFixed(1)}%)`}`
 		: "Unavailable";
 	const generated = new Date().toLocaleString();
 	const topLevelMetrics: Metric[] = [
-		{ label: "System prompt", value: input.systemPrompt.length },
-		{ label: "Tool definitions", value: toolChars },
-		{ label: "Conversation", value: messageChars },
+		{ label: "System prompt", value: tokens(input.systemPrompt) },
+		{ label: "Tool definitions", value: toolTokens },
+		{ label: "Conversation", value: messageTokens },
 	];
 	const knownPromptMetrics: Metric[] = [
 		...(input.options.contextFiles ?? []).map((file) => ({
 			label: file.path,
-			value: file.content.length,
+			value: tokens(file.content),
 			detail: "context file",
 		})),
 		...modelSkills.map((skill) => ({
 			label: skill.name,
-			value: skill.description.length,
+			value: tokens(skill.description),
 			detail: "skill catalog description",
 		})),
 		...(input.options.customPrompt === undefined
 			? []
-			: [{ label: "Custom base prompt", value: input.options.customPrompt.length, detail: "replacement prompt" }]),
-		{ label: "Appended prompt", value: input.options.appendSystemPrompt?.length ?? 0 },
-		{ label: "Tool snippets", value: chars(input.options.toolSnippets ?? {}) },
-		{ label: "Tool guidelines", value: chars(input.options.promptGuidelines ?? []) },
+			: [{ label: "Custom base prompt", value: tokens(input.options.customPrompt), detail: "replacement prompt" }]),
+		{ label: "Appended prompt", value: tokens(input.options.appendSystemPrompt ?? "") },
+		{ label: "Tool snippets", value: tokens(input.options.toolSnippets ?? {}) },
+		{ label: "Tool guidelines", value: tokens(input.options.promptGuidelines ?? []) },
 	].filter((metric) => metric.value > 0);
-	const knownPromptChars = knownPromptMetrics.reduce((sum, metric) => sum + metric.value, 0);
+	const knownPromptTokens = knownPromptMetrics.reduce((sum, metric) => sum + metric.value, 0);
 	const promptMetrics = [
 		...knownPromptMetrics,
 		{
 			label: input.options.customPrompt === undefined ? "Built-in prompt and formatting" : "Prompt formatting",
-			value: Math.max(0, input.systemPrompt.length - knownPromptChars),
+			value: Math.max(0, tokens(input.systemPrompt) - knownPromptTokens),
 		},
 	].filter((metric) => metric.value > 0);
 	const toolSourceMetrics = groupMetrics(
-		activeTools.map((tool) => ({ label: sourceLabel(tool.sourceInfo.source), value: chars(tool) })),
+		activeTools.map((tool) => ({ label: sourceLabel(tool.sourceInfo.source), value: tokens(tool) })),
 	);
 	const toolMetrics = activeTools.map((tool) => ({
 		label: tool.name,
-		value: chars(tool),
+		value: tokens(tool),
 		detail: sourceLabel(tool.sourceInfo.source),
 	}));
 	const messageMetrics = messages.map(({ entry, message }, index) => ({
 		label: `${index + 1}. ${entryLabel(entry)}`,
-		value: chars(message),
+		value: tokens(message),
 	}));
 	const messageGroupMetrics = groupMetrics(
-		messages.map(({ entry, message }) => ({ label: entryLabel(entry), value: chars(message) })),
+		messages.map(({ entry, message }) => ({ label: entryLabel(entry), value: tokens(message) })),
 	);
 
 	const contextFiles = input.options.contextFiles?.length
 		? input.options.contextFiles
-				.map((file) => details(file.path, file.content, `${count(file.content.length)} characters`))
+				.map((file) => details(file.path, file.content, `${count(tokens(file.content))} estimated tokens`))
 				.join("")
 		: '<p class="empty">None</p>';
 	const skills = modelSkills.length
 		? modelSkills
 				.map(
 					(skill) =>
-						`<div class="item"><strong>${escapeHtml(skill.name)}</strong><span>${count(skill.description.length)} description characters</span><p>${escapeHtml(skill.description)}</p><code>${escapeHtml(skill.filePath)}</code></div>`,
+						`<div class="item"><strong>${escapeHtml(skill.name)}</strong><span>${count(tokens(skill.description))} estimated description tokens</span><p>${escapeHtml(skill.description)}</p><code>${escapeHtml(skill.filePath)}</code></div>`,
 				)
 				.join("")
 		: '<p class="empty">None</p>';
@@ -193,7 +196,7 @@ export function contextAuditHtml(input: ContextAuditInput): string {
 					details(
 						tool.name,
 						JSON.stringify(tool, null, 2),
-						`${count(chars(tool))} JSON characters · ${tool.sourceInfo.path}`,
+						`${count(tokens(tool))} estimated JSON tokens · ${tool.sourceInfo.path}`,
 					),
 				)
 				.join("")
@@ -204,7 +207,7 @@ export function contextAuditHtml(input: ContextAuditInput): string {
 					details(
 						`${index + 1}. ${entryLabel(entry)}`,
 						JSON.stringify(message, null, 2),
-						`${count(chars(message))} JSON characters`,
+						`${count(tokens(message))} estimated JSON tokens`,
 					),
 				)
 				.join("")
@@ -265,9 +268,9 @@ code { overflow-wrap: anywhere; }
 <p class="subtitle">Generated ${escapeHtml(generated)}. This local report does not enter model context.</p>
 <div class="cards">
 <div class="card"><span>Context usage</span><strong>${escapeHtml(usageLabel)}</strong></div>
-<div class="card"><span>System prompt</span><strong>${count(input.systemPrompt.length)} characters</strong></div>
-<div class="card"><span>Active tools</span><strong>${activeTools.length} · ${count(toolChars)} characters</strong></div>
-<div class="card"><span>Conversation</span><strong>${messages.length} messages · ${count(messageChars)} characters</strong></div>
+<div class="card"><span>System prompt</span><strong>${count(tokens(input.systemPrompt))} estimated tokens</strong></div>
+<div class="card"><span>Active tools</span><strong>${activeTools.length} · ${count(toolTokens)} estimated tokens</strong></div>
+<div class="card"><span>Conversation</span><strong>${messages.length} messages · ${count(messageTokens)} estimated tokens</strong></div>
 </div>
 <h2>What uses context</h2>
 <div class="visual">
@@ -285,8 +288,8 @@ ${barChart(messageGroupMetrics)}
 ${barChart(messageMetrics)}
 </div>
 <h2>Effective system prompt</h2>
-${details("Full prompt", input.systemPrompt, `${count(input.systemPrompt.length)} characters`)}
-<div class="item"><strong>Prompt construction</strong><p>Base: ${input.options.customPrompt === undefined ? "Pi built-in" : `custom (${count(input.options.customPrompt.length)} characters)`}<br>Appended: ${count(input.options.appendSystemPrompt?.length ?? 0)} characters<br>Tool snippets: ${Object.keys(input.options.toolSnippets ?? {}).length}<br>Tool guidelines: ${input.options.promptGuidelines?.length ?? 0}</p></div>
+${details("Full prompt", input.systemPrompt, `${count(tokens(input.systemPrompt))} estimated tokens`)}
+<div class="item"><strong>Prompt construction</strong><p>Base: ${input.options.customPrompt === undefined ? "Pi built-in" : `custom (${count(tokens(input.options.customPrompt))} estimated tokens)`}<br>Appended: ${count(tokens(input.options.appendSystemPrompt ?? ""))} estimated tokens<br>Tool snippets: ${count(tokens(input.options.toolSnippets ?? {}))} estimated tokens<br>Tool guidelines: ${count(tokens(input.options.promptGuidelines ?? []))} estimated tokens</p></div>
 <h2>Context files</h2>
 ${contextFiles}
 <h2>Model-visible skill catalog</h2>
@@ -298,7 +301,7 @@ ${conversation}
 <h2>Loaded but not model-visible</h2>
 <div class="item"><strong>Inactive tools: ${inactiveTools.length}</strong><p>${escapeHtml(inactiveTools.map((tool) => tool.name).join(", ") || "None")}</p></div>
 <div class="item"><strong>Manual-only skills: ${manualSkills.length}</strong><p>${escapeHtml(manualSkills.map((skill) => skill.name).join(", ") || "None")}</p></div>
-<p class="notice">Per-turn extensions can alter the system prompt, messages, or provider payload after this command runs. JSON character counts compare size; they are not token counts.</p>
+<p class="notice">Per-turn extensions can alter the system prompt, messages, or provider payload after this command runs. Breakdown values estimate tokens with OpenAI's <code>o200k_base</code> tokenizer; only context usage is provider-reported.</p>
 </main>
 </body>
 </html>`;

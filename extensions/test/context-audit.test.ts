@@ -50,6 +50,9 @@ test("renders model-visible sources and context visualizations", () => {
 	assert.match(html, />local</);
 	assert.doesNotMatch(html, />auto</);
 	assert.match(html, /Full prompt/);
+	assert.match(html, /<span>System prompt<\/span><strong>2 estimated tokens<\/strong>/);
+	assert.match(html, /o200k_base/);
+	assert.doesNotMatch(html, /JSON character counts/);
 });
 
 test("escapes model-controlled HTML", () => {
