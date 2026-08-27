@@ -21,6 +21,7 @@
 - Put long-living plans in `.plans/` in the root of the repository, which will be gitignored.
 - Copying multiple things to my clipboard (prompts, etc) is fine since I use a clipboard manager.
 - When I ask for a prompt or reply ("draft a reply", "give me a prompt", etc), always copy it to my clipboard, dont just say it in the chat.
+- Only add regression tests (or request them in review) if I specifically ask for. Adding regresssion tests generally just adds tech debt of the past.
 
 ## Tools
 

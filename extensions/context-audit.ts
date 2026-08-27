@@ -1,5 +1,6 @@
 import { getEncoding } from "js-tiktoken";
 import {
+	estimateTokens,
 	sessionEntryToContextMessages,
 	type BuildSystemPromptOptions,
 	type ExtensionAPI,
@@ -124,7 +125,7 @@ export function contextAuditHtml(input: ContextAuditInput): string {
 		sessionEntryToContextMessages(entry).map((message) => ({ entry, message })),
 	);
 	const toolTokens = activeTools.reduce((sum, tool) => sum + tokens(tool), 0);
-	const messageTokens = messages.reduce((sum, item) => sum + tokens(item.message), 0);
+	const messageTokens = messages.reduce((sum, item) => sum + estimateTokens(item.message), 0);
 	const usage = input.contextUsage;
 	const usageLabel = usage
 		? `${usage.tokens === null ? "Unknown" : `${count(usage.tokens)} tokens`} / ${count(usage.contextWindow)}${usage.percent === null ? "" : ` (${usage.percent.toFixed(1)}%)`}`
@@ -171,10 +172,10 @@ export function contextAuditHtml(input: ContextAuditInput): string {
 	}));
 	const messageMetrics = messages.map(({ entry, message }, index) => ({
 		label: `${index + 1}. ${entryLabel(entry)}`,
-		value: tokens(message),
+		value: estimateTokens(message),
 	}));
 	const messageGroupMetrics = groupMetrics(
-		messages.map(({ entry, message }) => ({ label: entryLabel(entry), value: tokens(message) })),
+		messages.map(({ entry, message }) => ({ label: entryLabel(entry), value: estimateTokens(message) })),
 	);
 
 	const contextFiles = input.options.contextFiles?.length
@@ -207,7 +208,7 @@ export function contextAuditHtml(input: ContextAuditInput): string {
 					details(
 						`${index + 1}. ${entryLabel(entry)}`,
 						JSON.stringify(message, null, 2),
-						`${count(tokens(message))} estimated JSON tokens`,
+						`${count(estimateTokens(message))} estimated tokens`,
 					),
 				)
 				.join("")
@@ -301,7 +302,7 @@ ${conversation}
 <h2>Loaded but not model-visible</h2>
 <div class="item"><strong>Inactive tools: ${inactiveTools.length}</strong><p>${escapeHtml(inactiveTools.map((tool) => tool.name).join(", ") || "None")}</p></div>
 <div class="item"><strong>Manual-only skills: ${manualSkills.length}</strong><p>${escapeHtml(manualSkills.map((skill) => skill.name).join(", ") || "None")}</p></div>
-<p class="notice">Per-turn extensions can alter the system prompt, messages, or provider payload after this command runs. Breakdown values estimate tokens with OpenAI's <code>o200k_base</code> tokenizer; only context usage is provider-reported.</p>
+<p class="notice">Per-turn extensions can alter the system prompt, messages, or provider payload after this command runs. System prompt and tool values use OpenAI's <code>o200k_base</code> tokenizer. Conversation values use Pi's provider-visible content estimate. Only context usage is provider-reported.</p>
 </main>
 </body>
 </html>`;
