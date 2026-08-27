@@ -1,48 +1,20 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const execFileAsync = promisify(execFile);
-const GLOBAL_VALUE_OPTIONS = new Set(["-R", "--repo", "--hostname", "--config"]);
-const VALUE_OPTIONS = new Set([
-	"-A",
-	"--author-email",
-	"-b",
-	"--body",
-	"-F",
-	"--body-file",
-	"--match-head-commit",
-	"--subject",
-]);
-const FLAG_OPTIONS = new Set([
-	"--admin",
-	"--auto",
-	"-d",
-	"--delete-branch",
-	"--disable-auto",
-	"-m",
-	"--merge",
-	"-r",
-	"--rebase",
-	"-s",
-	"--squash",
-]);
-const GH_TIMEOUT_MS = 15_000;
 
-export type MergeCommandClassification = "none" | "current-branch" | "blocked";
+// ---------------------------------------------------------------------------
+// Shell parsing
+// ---------------------------------------------------------------------------
 
-type ParsedGhPrMerge = {
-	classification: MergeCommandClassification;
-	globalOptions: string[];
-};
-
-type ShellCommand = {
+export interface ShellCommand {
 	words: string[];
 	ambiguous: boolean;
-};
+}
 
 /** Split a shell command list without evaluating expansions. */
-function shellCommands(command: string): ShellCommand[] {
+export function shellCommands(command: string): ShellCommand[] {
 	const commands: ShellCommand[] = [];
 	let start = 0;
 	let quote: "'" | '"' | undefined;
@@ -79,7 +51,7 @@ function shellCommands(command: string): ShellCommand[] {
 }
 
 /** Tokenize one simple command. Ambiguous shell syntax is retained but never evaluated. */
-function shellWords(command: string): ShellCommand {
+export function shellWords(command: string): ShellCommand {
 	const words: string[] = [];
 	let word = "";
 	let hasWord = false;
@@ -138,18 +110,88 @@ function shellWords(command: string): ShellCommand {
 	return { words, ambiguous };
 }
 
-function isGhExecutable(word: string | undefined): boolean {
-	return word?.split("/").at(-1) === "gh";
-}
-
 function isAssignment(word: string | undefined): boolean {
 	return word !== undefined && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
 
-/** Return the gh executable after assignments and recognized non-executing wrappers. */
+const SIMPLE_WRAPPERS = new Set(["rtk", "sudo", "time"]);
+
+/** Find the executable, skipping leading assignments and common wrappers. */
+export function findExecutable(words: string[]): string | undefined {
+	let index = 0;
+	for (;;) {
+		while (isAssignment(words[index])) index++;
+		const word = words[index];
+		if (word === undefined) return undefined;
+		if (SIMPLE_WRAPPERS.has(word)) {
+			index++;
+			continue;
+		}
+		if (word === "env") {
+			index++;
+			while (isAssignment(words[index])) index++;
+			if (words[index] === "--" || words[index] === "-p") index++;
+			else if (words[index]?.startsWith("-")) return undefined;
+			continue;
+		}
+		if (word === "command") {
+			index++;
+			if (words[index] === "--" || words[index] === "-p") index++;
+			else if (words[index]?.startsWith("-")) return undefined;
+			continue;
+		}
+		return word;
+	}
+}
+
+export function basename(word: string): string {
+	return word.split("/").at(-1) ?? word;
+}
+
+// ---------------------------------------------------------------------------
+// gh pr merge parsing
+// ---------------------------------------------------------------------------
+
+const GLOBAL_VALUE_OPTIONS = new Set(["-R", "--repo", "--hostname", "--config"]);
+const VALUE_OPTIONS = new Set([
+	"-A",
+	"--author-email",
+	"-b",
+	"--body",
+	"-F",
+	"--body-file",
+	"--match-head-commit",
+	"--subject",
+]);
+const FLAG_OPTIONS = new Set([
+	"--admin",
+	"--auto",
+	"-d",
+	"--delete-branch",
+	"--disable-auto",
+	"-m",
+	"--merge",
+	"-r",
+	"--rebase",
+	"-s",
+	"--squash",
+]);
+const GH_TIMEOUT_MS = 15_000;
+
+export type MergeCommandClassification = "none" | "current-branch" | "blocked";
+
+interface ParsedGhPrMerge {
+	classification: MergeCommandClassification;
+	globalOptions: string[];
+}
+
+function isGhExecutable(word: string | undefined): boolean {
+	return word !== undefined && basename(word) === "gh";
+}
+
+/** Return the gh executable index after assignments and recognized wrappers. */
 function ghExecutableIndex(words: string[]): number | undefined {
 	let index = 0;
-
 	for (;;) {
 		while (isAssignment(words[index])) index++;
 		if (words[index] === "rtk") {
@@ -224,7 +266,7 @@ function simpleCommandContainsGhPrMergeEvidence(command: ShellCommand): boolean 
 	);
 }
 
-function parseGhPrMerge(command: string): ParsedGhPrMerge {
+export function parseGhPrMerge(command: string): ParsedGhPrMerge {
 	let currentBranch: ParsedGhPrMerge | undefined;
 	for (const simpleCommand of shellCommands(command)) {
 		const parsed = parseSimpleGhPrMerge(simpleCommand);
@@ -273,7 +315,87 @@ async function gh(cwd: string, args: string[]): Promise<string> {
 	return stdout.trim();
 }
 
-export default function (pi: ExtensionAPI): void {
+/** Verify that the current branch's PR belongs to the authenticated user. */
+async function verifyCurrentBranchPr(merge: ParsedGhPrMerge, cwd: string): Promise<string | undefined> {
+	try {
+		const [viewer, pr] = await Promise.all([
+			gh(cwd, [...merge.globalOptions, "api", "user", "--jq", ".login"]),
+			gh(cwd, [...merge.globalOptions, "pr", "view", "--json", "author,headRefName"]),
+		]);
+		const details = JSON.parse(pr) as { author?: { login?: string }; headRefName?: string };
+		if (details.author?.login !== viewer || !details.headRefName?.startsWith(`${viewer}/`)) {
+			return "Only the authenticated user's branch PR may be merged. Do not bypass this guard.";
+		}
+	} catch (error) {
+		return `Could not verify the current branch PR: ${error instanceof Error ? error.message : String(error)}. Do not bypass this guard.`;
+	}
+	return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Block rules
+// ---------------------------------------------------------------------------
+
+export interface BlockRule {
+	commands: string[];
+	reason?: string;
+	check?: (command: string, ctx: ExtensionContext) => string | undefined | null | Promise<string | undefined | null>;
+}
+
+const rules: BlockRule[] = [
+	{
+		commands: ["bzl", "bazel"],
+		reason:
+			"Bazel/bzl builds are extremely slow and should only run in CI. Use `go` commands (go build, go test, go vet) for local builds and tests instead.",
+	},
+	{
+		commands: ["gh"],
+		check: async (command, ctx) => {
+			if (containsGhApiMerge(command)) {
+				return "PR merges through gh api are blocked. Do not bypass this guard; use gh pr merge from the current branch.";
+			}
+			const merge = parseGhPrMerge(command);
+			if (merge.classification === "none") return undefined;
+			if (merge.classification !== "current-branch") {
+				return "Explicit or ambiguous PR targets are blocked. Merge only the current branch's PR with recognized options.";
+			}
+			return verifyCurrentBranchPr(merge, ctx.cwd);
+		},
+	},
+];
+
+/** Find the first matching block rule for a command string. */
+export async function findBlockedCommand(
+	command: string,
+	ruleSet: BlockRule[],
+	ctx: ExtensionContext,
+): Promise<string | undefined> {
+	if (ruleSet.length === 0) return undefined;
+
+	const executables = new Set<string>();
+	for (const simpleCommand of shellCommands(command)) {
+		const exe = findExecutable(simpleCommand.words);
+		if (exe) executables.add(basename(exe).toLowerCase());
+	}
+
+	for (const rule of ruleSet) {
+		const matches = rule.commands.some((cmd) => executables.has(cmd.toLowerCase()));
+		if (!matches) continue;
+		if (rule.check) {
+			const reason = await rule.check(command, ctx);
+			if (reason) return reason;
+		} else if (rule.reason) {
+			return rule.reason;
+		}
+	}
+	return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Extension
+// ---------------------------------------------------------------------------
+
+export default function commandBlockerExtension(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		if (
 			!isToolCallEventType("bash", event) &&
@@ -281,41 +403,7 @@ export default function (pi: ExtensionAPI): void {
 		)
 			return;
 
-		const command = event.input.command;
-		if (containsGhApiMerge(command)) {
-			return {
-				block: true,
-				reason:
-					"PR merges through gh api are blocked. Do not bypass this guard; use gh pr merge from the current branch.",
-			};
-		}
-		const merge = parseGhPrMerge(command);
-		if (merge.classification === "none") return;
-		if (merge.classification !== "current-branch") {
-			return {
-				block: true,
-				reason:
-					"Explicit or ambiguous PR targets are blocked. Merge only the current branch's PR with recognized options.",
-			};
-		}
-
-		try {
-			const [viewer, pr] = await Promise.all([
-				gh(ctx.cwd, [...merge.globalOptions, "api", "user", "--jq", ".login"]),
-				gh(ctx.cwd, [...merge.globalOptions, "pr", "view", "--json", "author,headRefName"]),
-			]);
-			const details = JSON.parse(pr) as { author?: { login?: string }; headRefName?: string };
-			if (details.author?.login !== viewer || !details.headRefName?.startsWith(`${viewer}/`)) {
-				return {
-					block: true,
-					reason: "Only the authenticated user's branch PR may be merged. Do not bypass this guard.",
-				};
-			}
-		} catch (error) {
-			return {
-				block: true,
-				reason: `Could not verify the current branch PR: ${error instanceof Error ? error.message : String(error)}. Do not bypass this guard.`,
-			};
-		}
+		const reason = await findBlockedCommand(event.input.command, rules, ctx);
+		if (reason) return { block: true, reason };
 	});
 }
