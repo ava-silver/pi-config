@@ -67,6 +67,132 @@ function sanitizeAgentOptions(value: unknown): SandboxAgentOptions {
 	};
 }
 
+interface SandboxMessageContext {
+	token: string;
+	child: ChildProcess;
+	options: RunWorkflowSandboxOptions;
+	requestIds: Set<number>;
+	activeAgentRequests: Map<number, AbortController>;
+	finish: (error?: Error, value?: unknown) => void;
+	isFinished: () => boolean;
+	acceptRequest: (id: number) => boolean;
+}
+
+interface AgentRequest {
+	id: number;
+	prompt: string;
+	options: Record<string, unknown>;
+}
+
+function parseAgentRequest(payloadJson: string): AgentRequest | undefined {
+	const payload: unknown = JSON.parse(payloadJson);
+	if (
+		!isRecord(payload) ||
+		!Number.isSafeInteger(payload.id) ||
+		typeof payload.id !== "number" ||
+		payload.id < 1 ||
+		typeof payload.prompt !== "string" ||
+		payload.prompt.length > 100_000 ||
+		!isRecord(payload.options)
+	) {
+		return undefined;
+	}
+	return { id: payload.id, prompt: payload.prompt, options: payload.options };
+}
+
+function sendAgentResult(context: SandboxMessageContext, id: number, result: SandboxAgentResult) {
+	if (!context.activeAgentRequests.delete(id) || context.isFinished() || !context.child.connected) return;
+	const normalized = toSerializable(result, { maxDepth: 16, maxNodes: 10_000, maxStringBytes: 128 * 1024 });
+	let resultJson = JSON.stringify(normalized);
+	if (byteLength(resultJson) > MAX_AGENT_MESSAGE_BYTES) {
+		resultJson = JSON.stringify({
+			ok: false,
+			output: "",
+			error: "Agent result exceeded the workflow IPC output limit",
+		});
+	}
+	context.child.send({ token: context.token, kind: "agentResult", id, resultJson });
+}
+
+function handlePhaseMessage(raw: Record<string, unknown>, context: SandboxMessageContext) {
+	if (typeof raw.payloadJson !== "string" || raw.payloadJson.length > 4096) {
+		context.finish(new Error("Workflow sandbox sent an invalid phase update"));
+		return;
+	}
+	try {
+		const payload: unknown = JSON.parse(raw.payloadJson);
+		if (!isRecord(payload) || typeof payload.title !== "string") throw new Error("invalid title");
+		context.options.onPhase(payload.title.slice(0, 160));
+	} catch {
+		context.finish(new Error("Workflow sandbox sent an invalid phase update"));
+	}
+}
+
+function handleAgentMessage(raw: Record<string, unknown>, context: SandboxMessageContext) {
+	if (typeof raw.payloadJson !== "string" || byteLength(raw.payloadJson) > MAX_AGENT_MESSAGE_BYTES) {
+		context.finish(new Error("Workflow sandbox sent an oversized agent request"));
+		return;
+	}
+	let request: AgentRequest | undefined;
+	try {
+		request = parseAgentRequest(raw.payloadJson);
+	} catch {
+		context.finish(new Error("Workflow sandbox sent malformed agent JSON"));
+		return;
+	}
+	if (!request) {
+		context.finish(new Error("Workflow sandbox sent an invalid agent request"));
+		return;
+	}
+	if (!context.acceptRequest(request.id)) {
+		context.finish(new Error("Workflow sandbox exceeded its agent request budget"));
+		return;
+	}
+	const abortController = new AbortController();
+	context.activeAgentRequests.set(request.id, abortController);
+	void context.options
+		.onAgent(request.prompt, sanitizeAgentOptions(request.options), abortController.signal)
+		.then((result) => sendAgentResult(context, request.id, result))
+		.catch((error) => sendAgentResult(context, request.id, { ok: false, output: "", error: errorText(error) }));
+}
+
+function handleResultMessage(raw: Record<string, unknown>, context: SandboxMessageContext) {
+	if (typeof raw.resultJson !== "string" || byteLength(raw.resultJson) > MAX_RESULT_BYTES) {
+		context.finish(new Error("Workflow result exceeded the IPC limit"));
+		return;
+	}
+	try {
+		const normalized = toSerializable(JSON.parse(raw.resultJson));
+		context.finish(undefined, JSON.parse(JSON.stringify(normalized)));
+	} catch (error) {
+		context.finish(new Error(`Workflow returned invalid JSON: ${errorText(error)}`));
+	}
+}
+
+function handleSandboxMessage(raw: unknown, context: SandboxMessageContext) {
+	if (!isRecord(raw) || raw.token !== context.token || typeof raw.kind !== "string") {
+		context.finish(new Error("Workflow sandbox sent an invalid IPC message"));
+		return;
+	}
+	switch (raw.kind) {
+		case "phase":
+			handlePhaseMessage(raw, context);
+			return;
+		case "agent":
+			handleAgentMessage(raw, context);
+			return;
+		case "result":
+			handleResultMessage(raw, context);
+			return;
+		case "error":
+			if (typeof raw.error === "string") {
+				context.finish(new Error(raw.error.slice(0, 16 * 1024)));
+				return;
+			}
+	}
+	context.finish(new Error("Workflow sandbox sent an unknown IPC message"));
+}
+
 /**
  * Execute orchestration code in a separate child process using the current runtime.
  * The child exposes only the narrow agent/phase IPC protocol and is always
@@ -136,100 +262,20 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
 			}
 		});
 		child.on("message", (raw: unknown) => {
-			if (!isRecord(raw) || raw.token !== token || typeof raw.kind !== "string") {
-				finish(new Error("Workflow sandbox sent an invalid IPC message"));
-				return;
-			}
-			if (raw.kind === "phase") {
-				if (typeof raw.payloadJson !== "string" || raw.payloadJson.length > 4096) {
-					finish(new Error("Workflow sandbox sent an invalid phase update"));
-					return;
-				}
-				try {
-					const payload: unknown = JSON.parse(raw.payloadJson);
-					if (!isRecord(payload) || typeof payload.title !== "string") {
-						throw new Error("invalid title");
-					}
-					options.onPhase(payload.title.slice(0, 160));
-				} catch {
-					finish(new Error("Workflow sandbox sent an invalid phase update"));
-				}
-				return;
-			}
-			if (raw.kind === "agent") {
-				if (typeof raw.payloadJson !== "string" || byteLength(raw.payloadJson) > MAX_AGENT_MESSAGE_BYTES) {
-					finish(new Error("Workflow sandbox sent an oversized agent request"));
-					return;
-				}
-				let payload: unknown;
-				try {
-					payload = JSON.parse(raw.payloadJson);
-				} catch {
-					finish(new Error("Workflow sandbox sent malformed agent JSON"));
-					return;
-				}
-				if (
-					!isRecord(payload) ||
-					!Number.isSafeInteger(payload.id) ||
-					typeof payload.id !== "number" ||
-					payload.id < 1 ||
-					typeof payload.prompt !== "string" ||
-					payload.prompt.length > 100_000 ||
-					!isRecord(payload.options)
-				) {
-					finish(new Error("Workflow sandbox sent an invalid agent request"));
-					return;
-				}
-				if (requestIds.has(payload.id) || ++requestCount > MAX_AGENT_REQUESTS) {
-					finish(new Error("Workflow sandbox exceeded its agent request budget"));
-					return;
-				}
-				requestIds.add(payload.id);
-				const id = payload.id;
-				const abortController = new AbortController();
-				const sendResult = (result: SandboxAgentResult) => {
-					if (!activeAgentRequests.delete(id)) return;
-					if (finished || !child.connected) return;
-					const normalized = toSerializable(result, {
-						maxDepth: 16,
-						maxNodes: 10_000,
-						maxStringBytes: 128 * 1024,
-					});
-					let resultJson = JSON.stringify(normalized);
-					if (byteLength(resultJson) > MAX_AGENT_MESSAGE_BYTES) {
-						resultJson = JSON.stringify({
-							ok: false,
-							output: "",
-							error: "Agent result exceeded the workflow IPC output limit",
-						});
-					}
-					child.send({ token, kind: "agentResult", id, resultJson });
-				};
-				activeAgentRequests.set(id, abortController);
-				void options
-					.onAgent(payload.prompt, sanitizeAgentOptions(payload.options), abortController.signal)
-					.then(sendResult)
-					.catch((error) => sendResult({ ok: false, output: "", error: errorText(error) }));
-				return;
-			}
-			if (raw.kind === "result") {
-				if (typeof raw.resultJson !== "string" || byteLength(raw.resultJson) > MAX_RESULT_BYTES) {
-					finish(new Error("Workflow result exceeded the IPC limit"));
-					return;
-				}
-				try {
-					const normalized = toSerializable(JSON.parse(raw.resultJson));
-					finish(undefined, JSON.parse(JSON.stringify(normalized)));
-				} catch (error) {
-					finish(new Error(`Workflow returned invalid JSON: ${errorText(error)}`));
-				}
-				return;
-			}
-			if (raw.kind === "error" && typeof raw.error === "string") {
-				finish(new Error(raw.error.slice(0, 16 * 1024)));
-				return;
-			}
-			finish(new Error("Workflow sandbox sent an unknown IPC message"));
+			handleSandboxMessage(raw, {
+				token,
+				child,
+				options,
+				requestIds,
+				activeAgentRequests,
+				finish,
+				isFinished: () => finished,
+				acceptRequest: (id) => {
+					if (requestIds.has(id) || ++requestCount > MAX_AGENT_REQUESTS) return false;
+					requestIds.add(id);
+					return true;
+				},
+			});
 		});
 
 		child.send(

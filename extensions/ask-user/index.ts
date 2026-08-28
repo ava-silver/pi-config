@@ -7,7 +7,7 @@
  * - Esc on the options dismisses the question (the model is told you declined)
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Cause, Effect, Exit } from "effect";
 import { Type, type Static } from "typebox";
@@ -89,6 +89,172 @@ function wrapText(text: string, width: number): string[] {
 	return lines;
 }
 
+function showQuestionUI(
+	params: AskUserInput,
+	ctx: ExtensionContext,
+	allOptions: DisplayOption[],
+	uiSignal: AbortSignal,
+) {
+	return ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
+		let optionIndex = 0;
+		let editMode = false;
+		let cachedLines: string[] | undefined;
+
+		let settled = false;
+
+		function finish(result: SelectionResult) {
+			if (settled) return;
+			settled = true;
+			uiSignal.removeEventListener("abort", cancel);
+			done(result);
+		}
+
+		function cancel() {
+			finish(null);
+		}
+
+		uiSignal.addEventListener("abort", cancel, { once: true });
+		if (uiSignal.aborted) queueMicrotask(cancel);
+
+		const editorTheme: EditorTheme = {
+			borderColor: (s) => theme.fg("accent", s),
+			selectList: {
+				selectedPrefix: (t) => theme.fg("accent", t),
+				selectedText: (t) => theme.fg("accent", t),
+				description: (t) => theme.fg("muted", t),
+				scrollInfo: (t) => theme.fg("dim", t),
+				noMatch: (t) => theme.fg("warning", t),
+			},
+		};
+		const editor = new Editor(tui, editorTheme);
+
+		editor.onSubmit = (value) => {
+			const trimmed = value.trim();
+			if (trimmed) {
+				finish({ answer: trimmed, wasCustom: true });
+			} else {
+				editMode = false;
+				editor.setText("");
+				refresh();
+			}
+		};
+
+		function refresh() {
+			cachedLines = undefined;
+			tui.requestRender();
+		}
+
+		function selectOption(index: number) {
+			const selected = allOptions[index];
+			if (!selected) return;
+			if (selected.isOther) {
+				optionIndex = index;
+				editMode = true;
+				refresh();
+			} else {
+				finish({
+					answer: selected.label,
+					wasCustom: false,
+					index: index + 1,
+				});
+			}
+		}
+
+		function handleInput(data: string) {
+			if (editMode) {
+				if (matchesKey(data, Key.escape)) {
+					editMode = false;
+					editor.setText("");
+					refresh();
+					return;
+				}
+				editor.handleInput(data);
+				refresh();
+				return;
+			}
+
+			if (matchesKey(data, Key.up)) {
+				optionIndex = (optionIndex - 1 + allOptions.length) % allOptions.length;
+				refresh();
+				return;
+			}
+			if (matchesKey(data, Key.down)) {
+				optionIndex = (optionIndex + 1) % allOptions.length;
+				refresh();
+				return;
+			}
+
+			if (data.length === 1 && data >= "1" && data <= String(allOptions.length)) {
+				selectOption(Number(data) - 1);
+				return;
+			}
+
+			if (matchesKey(data, Key.enter)) {
+				selectOption(optionIndex);
+				return;
+			}
+
+			if (matchesKey(data, Key.escape)) finish(null);
+		}
+
+		function render(width: number): string[] {
+			if (cachedLines) return cachedLines;
+
+			const lines: string[] = [];
+			const add = (s: string) => lines.push(truncateToWidth(s, width));
+			const title = " Question ";
+			add(theme.fg("accent", `─${title}${"─".repeat(Math.max(0, width - title.length - 1))}`));
+			for (const line of wrapText(params.question, Math.max(10, width - 2))) {
+				add(` ${theme.fg("text", theme.bold(line))}`);
+			}
+			lines.push("");
+
+			for (let i = 0; i < allOptions.length; i++) {
+				const opt = allOptions[i];
+				if (!opt) continue;
+				const selected = i === optionIndex;
+				const prefix = selected ? theme.fg("accent", " ❯ ") : "   ";
+				const marker = opt.isOther ? "✎" : `${i + 1}.`;
+				const label = `${marker} ${opt.label}`;
+				add(
+					prefix + theme.fg(selected || (opt.isOther && editMode) ? "accent" : opt.isOther ? "muted" : "text", label),
+				);
+				if (opt.description) add(`      ${theme.fg("muted", opt.description)}`);
+			}
+
+			if (editMode) {
+				lines.push("");
+				add(theme.fg("muted", " Your answer:"));
+				for (const line of editor.render(width - 2)) add(` ${line}`);
+			}
+
+			lines.push("");
+			add(
+				theme.fg(
+					"dim",
+					editMode
+						? " Enter submit • Esc back to options"
+						: ` ↑↓ or 1-${allOptions.length} select • Enter confirm • Esc dismiss`,
+				),
+			);
+			add(theme.fg("accent", "─".repeat(width)));
+			cachedLines = lines;
+			return lines;
+		}
+
+		return {
+			render,
+			invalidate: () => {
+				cachedLines = undefined;
+			},
+			handleInput,
+			dispose: () => {
+				uiSignal.removeEventListener("abort", cancel);
+			},
+		};
+	});
+}
+
 export default function askUser(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "ask_user",
@@ -128,175 +294,7 @@ export default function askUser(pi: ExtensionAPI) {
 
 			process.stdout.write("\x07");
 
-			const showQuestion = (uiSignal: AbortSignal) =>
-				ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
-					let optionIndex = 0;
-					let editMode = false;
-					let cachedLines: string[] | undefined;
-
-					let settled = false;
-
-					function finish(result: SelectionResult) {
-						if (settled) return;
-						settled = true;
-						uiSignal.removeEventListener("abort", cancel);
-						done(result);
-					}
-
-					function cancel() {
-						finish(null);
-					}
-
-					uiSignal.addEventListener("abort", cancel, { once: true });
-					if (uiSignal.aborted) queueMicrotask(cancel);
-
-					const editorTheme: EditorTheme = {
-						borderColor: (s) => theme.fg("accent", s),
-						selectList: {
-							selectedPrefix: (t) => theme.fg("accent", t),
-							selectedText: (t) => theme.fg("accent", t),
-							description: (t) => theme.fg("muted", t),
-							scrollInfo: (t) => theme.fg("dim", t),
-							noMatch: (t) => theme.fg("warning", t),
-						},
-					};
-					const editor = new Editor(tui, editorTheme);
-
-					editor.onSubmit = (value) => {
-						const trimmed = value.trim();
-						if (trimmed) {
-							finish({ answer: trimmed, wasCustom: true });
-						} else {
-							editMode = false;
-							editor.setText("");
-							refresh();
-						}
-					};
-
-					function refresh() {
-						cachedLines = undefined;
-						tui.requestRender();
-					}
-
-					function selectOption(index: number) {
-						const selected = allOptions[index];
-						if (!selected) return;
-						if (selected.isOther) {
-							optionIndex = index;
-							editMode = true;
-							refresh();
-						} else {
-							finish({
-								answer: selected.label,
-								wasCustom: false,
-								index: index + 1,
-							});
-						}
-					}
-
-					function handleInput(data: string) {
-						if (editMode) {
-							if (matchesKey(data, Key.escape)) {
-								editMode = false;
-								editor.setText("");
-								refresh();
-								return;
-							}
-							editor.handleInput(data);
-							refresh();
-							return;
-						}
-
-						if (matchesKey(data, Key.up)) {
-							optionIndex = (optionIndex - 1 + allOptions.length) % allOptions.length;
-							refresh();
-							return;
-						}
-						if (matchesKey(data, Key.down)) {
-							optionIndex = (optionIndex + 1) % allOptions.length;
-							refresh();
-							return;
-						}
-
-						// Number keys jump straight to an option
-						if (data.length === 1 && data >= "1" && data <= String(allOptions.length)) {
-							selectOption(Number(data) - 1);
-							return;
-						}
-
-						if (matchesKey(data, Key.enter)) {
-							selectOption(optionIndex);
-							return;
-						}
-
-						if (matchesKey(data, Key.escape)) {
-							finish(null);
-						}
-					}
-
-					function render(width: number): string[] {
-						if (cachedLines) return cachedLines;
-
-						const lines: string[] = [];
-						const add = (s: string) => lines.push(truncateToWidth(s, width));
-
-						const title = " Question ";
-						add(theme.fg("accent", `─${title}${"─".repeat(Math.max(0, width - title.length - 1))}`));
-						for (const line of wrapText(params.question, Math.max(10, width - 2))) {
-							add(` ${theme.fg("text", theme.bold(line))}`);
-						}
-						lines.push("");
-
-						for (let i = 0; i < allOptions.length; i++) {
-							const opt = allOptions[i];
-							if (!opt) continue;
-							const selected = i === optionIndex;
-							const prefix = selected ? theme.fg("accent", " ❯ ") : "   ";
-							const marker = opt.isOther ? "✎" : `${i + 1}.`;
-							const label = `${marker} ${opt.label}`;
-
-							if (selected || (opt.isOther && editMode)) {
-								add(prefix + theme.fg("accent", label));
-							} else {
-								add(prefix + theme.fg(opt.isOther ? "muted" : "text", label));
-							}
-
-							if (opt.description) {
-								add(`      ${theme.fg("muted", opt.description)}`);
-							}
-						}
-
-						if (editMode) {
-							lines.push("");
-							add(theme.fg("muted", " Your answer:"));
-							for (const line of editor.render(width - 2)) {
-								add(` ${line}`);
-							}
-						}
-
-						lines.push("");
-						if (editMode) {
-							add(theme.fg("dim", " Enter submit • Esc back to options"));
-						} else {
-							add(theme.fg("dim", ` ↑↓ or 1-${allOptions.length} select • Enter confirm • Esc dismiss`));
-						}
-						add(theme.fg("accent", "─".repeat(width)));
-
-						cachedLines = lines;
-						return lines;
-					}
-
-					return {
-						render,
-						invalidate: () => {
-							cachedLines = undefined;
-						},
-						handleInput,
-						dispose: () => {
-							uiSignal.removeEventListener("abort", cancel);
-						},
-					};
-				});
+			const showQuestion = (uiSignal: AbortSignal) => showQuestionUI(params, ctx, allOptions, uiSignal);
 
 			const uiExit = await Effect.runPromiseExit(Effect.tryPromise(showQuestion), signal ? { signal } : undefined);
 

@@ -34,7 +34,7 @@ function statusGlyph(snap: SubagentSnapshot, theme: Theme): string {
 /** Open the subagent-specific TakeoverView for the given subagent id. */
 export async function openTakeoverView(id: string, ctx: ExtensionContext, view: SubagentReadModel): Promise<void> {
 	await ctx.ui.custom<null>(
-		(tui, theme, keybindings, done) => new TakeoverView(tui, theme, keybindings, id, view, done),
+		(tui, theme, keybindings, done) => new TakeoverView({ tui, theme, keybindings, id, view, done }),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%" } },
 	);
 }
@@ -42,6 +42,15 @@ export async function openTakeoverView(id: string, ctx: ExtensionContext, view: 
 // --- Takeover view ------------------------------------------------------------
 
 const TRANSCRIPT_SCROLL_STEP = 6;
+
+interface TakeoverViewOptions {
+	tui: TUI;
+	theme: Theme;
+	keybindings: KeybindingsManager;
+	id: string;
+	view: SubagentReadModel;
+	done: (value: null) => void;
+}
 
 class TakeoverView implements Component, Focusable {
 	private tui: TUI;
@@ -68,21 +77,14 @@ class TakeoverView implements Component, Focusable {
 		this.input.focused = value;
 	}
 
-	constructor(
-		tui: TUI,
-		theme: Theme,
-		keybindings: KeybindingsManager,
-		id: string,
-		view: SubagentReadModel,
-		done: (value: null) => void,
-	) {
-		this.tui = tui;
-		this.theme = theme;
-		this.keybindings = keybindings;
-		this.id = id;
-		this.view = view;
-		this.done = done;
-		this.unsubscribe = view.subscribeTo(id, () => this.scheduleRender());
+	constructor(options: TakeoverViewOptions) {
+		this.tui = options.tui;
+		this.theme = options.theme;
+		this.keybindings = options.keybindings;
+		this.id = options.id;
+		this.view = options.view;
+		this.done = options.done;
+		this.unsubscribe = this.view.subscribeTo(this.id, () => this.scheduleRender());
 		// Elapsed time in the header ticks along at 1Hz.
 		this.ticker = setInterval(() => this.tui.requestRender(), 1000);
 		this.input.onSubmit = (value: string) => {

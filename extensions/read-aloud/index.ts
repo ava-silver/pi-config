@@ -194,56 +194,40 @@ type ActiveSpeech = {
 	task?: Promise<void>;
 };
 
-export default function readAloudExtension(pi: ExtensionAPI): void {
+function createSpeechStatusManager() {
+	const statuses = new Map<string, string>();
+	const render = (ctx: ExtensionContext) => {
+		const status = statuses.has("read-aloud-playback")
+			? "Playing..."
+			: statuses.has("read-aloud-synthesis")
+				? "Synthesizing speech..."
+				: statuses.size
+					? "Preparing speech..."
+					: undefined;
+		ctx.ui.setStatus("read-aloud", status);
+	};
+	const setSpeechStatus = (ctx: ExtensionContext, key: string, message: string | undefined) => {
+		if (message === undefined) statuses.delete(key);
+		else statuses.set(key, message);
+		render(ctx);
+	};
+	const clearSpeechStatuses = (ctx: ExtensionContext) => {
+		for (const key of ["read-aloud-model", "read-aloud-rewrite", "read-aloud-synthesis", "read-aloud-playback"])
+			setSpeechStatus(ctx, key, undefined);
+	};
+	return { clearSpeechStatuses, setSpeechStatus };
+}
+
+function createSpeechController() {
 	let playbackSpeed = DEFAULT_PLAYBACK_SPEED;
 	let activeSpeech: ActiveSpeech | undefined;
 	let lastSpokenText: string | undefined;
-	let lastAutoReadEntryId: string | undefined;
-	let autoReadGeneration = 0;
-	let autoReadPresence: AbortController | undefined;
+	let speechGeneration = 0;
 	let modelPromise: Promise<KokoroTTS> | undefined;
-	let autoReadPoll: ReturnType<typeof setInterval> | undefined;
 	const rewriteCache = new Map<string, string>();
 	const speechTasks = new Set<Promise<void>>();
-	const speechStatuses = new Map<string, string>();
 
-	function currentSpeechStatus(): string | undefined {
-		if (speechStatuses.has("read-aloud-playback")) return "Playing...";
-		if (speechStatuses.has("read-aloud-synthesis")) return "Synthesizing speech...";
-		if (speechStatuses.size > 0) return "Preparing speech...";
-	}
-
-	function renderSpeechStatuses(ctx: ExtensionContext): void {
-		ctx.ui.setStatus("read-aloud", currentSpeechStatus());
-	}
-
-	function setSpeechStatus(ctx: ExtensionContext, key: string, message: string | undefined): void {
-		if (message === undefined) speechStatuses.delete(key);
-		else speechStatuses.set(key, message);
-		renderSpeechStatuses(ctx);
-	}
-
-	function clearSpeechStatuses(ctx: ExtensionContext): void {
-		setSpeechStatus(ctx, "read-aloud-model", undefined);
-		setSpeechStatus(ctx, "read-aloud-rewrite", undefined);
-		setSpeechStatus(ctx, "read-aloud-synthesis", undefined);
-		setSpeechStatus(ctx, "read-aloud-playback", undefined);
-	}
-
-	async function isAutoReadEnabled(): Promise<boolean> {
-		try {
-			await access(AUTO_READ_DISABLED_FILE);
-			return false;
-		} catch {
-			return true;
-		}
-	}
-
-	async function setAutoReadEnabled(enabled: boolean): Promise<void> {
-		await mkdir(join(homedir(), ".pi", "agent"), { recursive: true });
-		if (enabled) await rm(AUTO_READ_DISABLED_FILE, { force: true });
-		else await writeFile(AUTO_READ_DISABLED_FILE, "disabled\n");
-	}
+	const { clearSpeechStatuses, setSpeechStatus } = createSpeechStatusManager();
 
 	function stopSpeech(): boolean {
 		if (!activeSpeech) return false;
@@ -447,7 +431,7 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 		}
 
 		const speech: ActiveSpeech = {
-			generation: ++autoReadGeneration,
+			generation: ++speechGeneration,
 			autoRead,
 			cancelled: false,
 			abortController: new AbortController(),
@@ -459,6 +443,54 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 		speech.task = task;
 		speechTasks.add(task);
 		void task.finally(() => speechTasks.delete(task));
+	}
+
+	return {
+		stopSpeech,
+		startSpeech,
+		getPlaybackSpeed: () => playbackSpeed,
+		setPlaybackSpeed: (speed: number) => {
+			playbackSpeed = speed;
+		},
+		getLastSpokenText: () => lastSpokenText,
+		stopAutoRead: () => {
+			if (activeSpeech?.autoRead) stopSpeech();
+		},
+		shutdown: async (ctx: ExtensionContext) => {
+			stopSpeech();
+			clearSpeechStatuses(ctx);
+			await waitForTasks(speechTasks, SHUTDOWN_WAIT_MS);
+			modelPromise = undefined;
+			rewriteCache.clear();
+		},
+	};
+}
+
+export default function readAloudExtension(pi: ExtensionAPI): void {
+	const speech = createSpeechController();
+	let lastAutoReadEntryId: string | undefined;
+	let autoReadGeneration = 0;
+	let autoReadPresence: AbortController | undefined;
+	let autoReadPoll: ReturnType<typeof setInterval> | undefined;
+
+	function startSpeech(text: string, ctx: ExtensionContext, notify: boolean, autoRead = false): void {
+		autoReadGeneration++;
+		speech.startSpeech(text, ctx, notify, autoRead);
+	}
+
+	async function isAutoReadEnabled(): Promise<boolean> {
+		try {
+			await access(AUTO_READ_DISABLED_FILE);
+			return false;
+		} catch {
+			return true;
+		}
+	}
+
+	async function setAutoReadEnabled(enabled: boolean): Promise<void> {
+		await mkdir(join(homedir(), ".pi", "agent"), { recursive: true });
+		if (enabled) await rm(AUTO_READ_DISABLED_FILE, { force: true });
+		else await writeFile(AUTO_READ_DISABLED_FILE, "disabled\n");
 	}
 
 	function latestText(ctx: ExtensionContext, notify: boolean): LatestAssistantText {
@@ -474,7 +506,7 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 
 	function toggleSpeech(ctx: ExtensionContext): void {
 		autoReadGeneration++;
-		if (stopSpeech()) {
+		if (speech.stopSpeech()) {
 			ctx.ui.notify("Read aloud stopped", "info");
 			return;
 		}
@@ -517,7 +549,7 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 			}
 			const enabled = action === "on" || (action === "" && !currentlyEnabled);
 			await setAutoReadEnabled(enabled);
-			if (!enabled && activeSpeech?.autoRead) stopSpeech();
+			if (!enabled) speech.stopAutoRead();
 			ctx.ui.notify(`Auto-read globally ${enabled ? "enabled" : "disabled"}`, "info");
 		},
 	});
@@ -525,11 +557,11 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("read-aloud-text", {
 		description: "Show the most recent Haiku spoken rendition",
 		handler: async (_args, ctx) => {
-			if (!lastSpokenText) {
+			if (!speech.getLastSpokenText()) {
 				ctx.ui.notify("No spoken rendition is available yet", "info");
 				return;
 			}
-			await ctx.ui.editor("Haiku spoken rendition (Esc to close):", lastSpokenText);
+			await ctx.ui.editor("Haiku spoken rendition (Esc to close):", speech.getLastSpokenText()!);
 		},
 	});
 
@@ -538,7 +570,7 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const value = args.trim();
 			if (!value) {
-				ctx.ui.notify(`Speech playback speed: ${playbackSpeed}x`, "info");
+				ctx.ui.notify(`Speech playback speed: ${speech.getPlaybackSpeed()}x`, "info");
 				return;
 			}
 			const parsed = parseRate(value);
@@ -546,8 +578,8 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Usage: /speech-rate <${MIN_SPEED}-${MAX_SPEED}>`, "error");
 				return;
 			}
-			playbackSpeed = parsed;
-			ctx.ui.notify(`Speech playback speed set to ${playbackSpeed}x`, "info");
+			speech.setPlaybackSpeed(parsed);
+			ctx.ui.notify(`Speech playback speed set to ${speech.getPlaybackSpeed()}x`, "info");
 		},
 	});
 
@@ -560,7 +592,7 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") return;
 		autoReadPoll = setInterval(() => {
 			void isAutoReadEnabled().then((enabled) => {
-				if (!enabled && activeSpeech?.autoRead) stopSpeech();
+				if (!enabled) speech.stopAutoRead();
 			});
 		}, AUTO_READ_POLL_MS);
 	});
@@ -587,13 +619,6 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
 		autoReadGeneration++;
 		autoReadPresence?.abort();
 		autoReadPresence = undefined;
-		stopSpeech();
-		clearSpeechStatuses(ctx);
-		await waitForTasks(speechTasks, SHUTDOWN_WAIT_MS);
-
-		// ONNX Runtime 1.21 can abort on macOS when native sessions are disposed during
-		// session teardown. Let process teardown reclaim the model instead.
-		modelPromise = undefined;
-		rewriteCache.clear();
+		await speech.shutdown(ctx);
 	});
 }

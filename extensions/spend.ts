@@ -223,11 +223,12 @@ function parseIndex(text: string): SessionIndex | undefined {
 	}
 }
 
-export function parseLedgerRecord(value: unknown): SpendRecord | undefined {
-	if (typeof value !== "object" || value === null) return;
-	const candidate = value as { [key: string]: unknown };
+type LedgerCandidate = { [key: string]: unknown };
+type LedgerIdentity = { kind: SpendKind; entryId: string };
+
+function hasValidLedgerFields(candidate: LedgerCandidate): boolean {
 	const { sessionId, key, timestamp, provider, model, cost, input, output, cacheRead, cacheWrite } = candidate;
-	if (
+	return !(
 		(Object.hasOwn(candidate, "cwd") && typeof candidate.cwd !== "string") ||
 		typeof sessionId !== "string" ||
 		!sessionId ||
@@ -246,38 +247,57 @@ export function parseLedgerRecord(value: unknown): SpendRecord | undefined {
 		!Number.isFinite(cacheRead) ||
 		typeof cacheWrite !== "number" ||
 		!Number.isFinite(cacheWrite)
-	)
-		return;
+	);
+}
 
-	let kind: SpendKind = "assistant";
-	let entryId: string;
+function parseLedgerIdentity(
+	candidate: LedgerCandidate,
+	sessionId: string,
+	key: string,
+	timestamp: number,
+): LedgerIdentity | undefined {
 	if (candidate.v === 3) {
+		const { kind, entryId } = candidate;
 		if (
-			(candidate.kind !== "assistant" &&
-				candidate.kind !== "tool" &&
-				candidate.kind !== "compaction" &&
-				candidate.kind !== "branch_summary") ||
-			typeof candidate.entryId !== "string" ||
-			!candidate.entryId
+			(kind !== "assistant" && kind !== "tool" && kind !== "compaction" && kind !== "branch_summary") ||
+			typeof entryId !== "string" ||
+			!entryId ||
+			key !== recordKey(kind, entryId, timestamp)
 		)
 			return;
-		kind = candidate.kind;
-		entryId = candidate.entryId;
-		if (key !== recordKey(kind, entryId, timestamp)) return;
-	} else if (candidate.v === 2 && key.startsWith(`${sessionId}:`)) {
-		entryId = key.slice(sessionId.length + 1);
-		if (!entryId) return;
-	} else if (candidate.v === 1) {
-		entryId = key;
-	} else {
-		return;
+		return { kind, entryId };
 	}
+	if (candidate.v === 2 && key.startsWith(`${sessionId}:`)) {
+		const entryId = key.slice(sessionId.length + 1);
+		return entryId ? { kind: "assistant", entryId } : undefined;
+	}
+	return candidate.v === 1 ? { kind: "assistant", entryId: key } : undefined;
+}
+
+export function parseLedgerRecord(value: unknown): SpendRecord | undefined {
+	if (typeof value !== "object" || value === null) return;
+	const candidate = value as LedgerCandidate;
+	if (!hasValidLedgerFields(candidate)) return;
+	const { sessionId, key, timestamp, provider, model, cost, input, output, cacheRead, cacheWrite } = candidate as {
+		sessionId: string;
+		key: string;
+		timestamp: number;
+		provider: string;
+		model: string;
+		cost: number;
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+	};
+	const identity = parseLedgerIdentity(candidate, sessionId, key, timestamp);
+	if (!identity) return;
 
 	return {
 		v: 3,
-		key: recordKey(kind, entryId, timestamp),
-		kind,
-		entryId,
+		key: recordKey(identity.kind, identity.entryId, timestamp),
+		kind: identity.kind,
+		entryId: identity.entryId,
 		sessionId,
 		...(typeof candidate.cwd === "string" ? { cwd: candidate.cwd } : {}),
 		timestamp,

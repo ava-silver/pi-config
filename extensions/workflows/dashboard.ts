@@ -103,86 +103,101 @@ function normalizeTranscript(value: unknown): TranscriptEntry[] {
 	return transcript;
 }
 
+function stringValue(record: Record<string, unknown>, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function numberValue(record: Record<string, unknown>, key: string): number | undefined {
+	const value = record[key];
+	return typeof value === "number" ? value : undefined;
+}
+
+function optionalString(key: string, record: Record<string, unknown>, fallback?: Record<string, unknown>): object {
+	const value = stringValue(record, key) ?? (fallback && stringValue(fallback, key));
+	return value === undefined ? {} : { [key]: value };
+}
+
+function agentState(value: unknown): AgentRecord["state"] {
+	if (value === "error" || value === "failed") return "error";
+	return value === "running" ? "running" : "done";
+}
+
+function normalizeAgent(value: unknown, index: number, startedAt: number): AgentRecord | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const agent = value as Record<string, unknown>;
+	const contextWindow = numberValue(agent, "contextWindow");
+	const finishedAt = numberValue(agent, "finishedAt");
+	const error = stringValue(agent, "error");
+	return {
+		index: numberValue(agent, "index") ?? index,
+		label: stringValue(agent, "label") ?? `agent-${index}`,
+		...optionalString("phase", agent),
+		state: agentState(agent.state),
+		...optionalString("model", agent),
+		...(contextWindow && Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
+		startedAt: numberValue(agent, "startedAt") ?? startedAt,
+		...(finishedAt === undefined ? {} : { finishedAt }),
+		...(error !== undefined && error !== "[undefined]" ? { error } : {}),
+		preview: stringValue(agent, "preview") ?? "",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: 0,
+			turns: 0,
+			...(agent.usage && typeof agent.usage === "object" ? agent.usage : {}),
+		},
+		transcript: normalizeTranscript(agent.transcript),
+	};
+}
+
+function normalizePhase(value: unknown): WorkflowDetails["phases"][number] | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const phase = value as Record<string, unknown>;
+	const title = stringValue(phase, "title");
+	return title === undefined ? undefined : { title, ...optionalString("detail", phase) };
+}
+
+function normalizedStatus(value: unknown): WorkflowDetails["status"] {
+	return value === "running" || value === "failed" || value === "aborted" ? value : "completed";
+}
+
 /** Leniently normalize a workflow.json (including runs from older tooling). */
 function normalizeDetails(runId: string, raw: unknown): WorkflowDetails | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
 	const record = raw as Record<string, unknown>;
-	const meta = (record.meta ?? {}) as Record<string, unknown>;
-
-	const rawAgents = Array.isArray(record.agents) ? record.agents : [];
-	const startedAt = typeof record.startedAt === "number" ? record.startedAt : 0;
-	const agents: AgentRecord[] = [];
-	for (const item of rawAgents) {
-		if (!item || typeof item !== "object") continue;
-		const a = item as Record<string, unknown>;
-		const state = a.state === "error" || a.state === "failed" ? "error" : a.state === "running" ? "running" : "done";
-		agents.push({
-			index: typeof a.index === "number" ? a.index : agents.length + 1,
-			label: typeof a.label === "string" ? a.label : `agent-${agents.length + 1}`,
-			...(typeof a.phase === "string" ? { phase: a.phase } : {}),
-			state,
-			...(typeof a.model === "string" ? { model: a.model } : {}),
-			...(typeof a.contextWindow === "number" && Number.isFinite(a.contextWindow) && a.contextWindow > 0
-				? { contextWindow: a.contextWindow }
-				: {}),
-			startedAt: typeof a.startedAt === "number" ? a.startedAt : startedAt,
-			...(typeof a.finishedAt === "number" ? { finishedAt: a.finishedAt } : {}),
-			...(typeof a.error === "string" && a.error !== "[undefined]" ? { error: a.error } : {}),
-			preview: typeof a.preview === "string" ? a.preview : "",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: 0,
-				turns: 0,
-				...(a.usage && typeof a.usage === "object" ? (a.usage as object) : {}),
-			},
-			transcript: normalizeTranscript(a.transcript),
-		});
-	}
-
+	const meta = record.meta && typeof record.meta === "object" ? (record.meta as Record<string, unknown>) : {};
+	const startedAt = numberValue(record, "startedAt") ?? 0;
+	const agents = (Array.isArray(record.agents) ? record.agents : []).reduce<AgentRecord[]>((normalized, agent) => {
+		const result = normalizeAgent(agent, normalized.length + 1, startedAt);
+		if (result) normalized.push(result);
+		return normalized;
+	}, []);
 	const rawPhases = Array.isArray(record.phases) ? record.phases : Array.isArray(meta.phases) ? meta.phases : [];
-	const phases: WorkflowDetails["phases"] = [];
-	for (const item of rawPhases) {
-		if (!item || typeof item !== "object") continue;
-		const p = item as Record<string, unknown>;
-		if (typeof p.title !== "string") continue;
-		phases.push({
-			title: p.title,
-			...(typeof p.detail === "string" ? { detail: p.detail } : {}),
-		});
-	}
-
-	const status =
-		record.status === "running" || record.status === "failed" || record.status === "aborted"
-			? record.status
-			: "completed";
+	const phases = rawPhases
+		.map(normalizePhase)
+		.filter((phase): phase is WorkflowDetails["phases"][number] => phase !== undefined);
+	const result = record.result;
+	const finishedAt = numberValue(record, "finishedAt");
 
 	return {
 		runId,
-		...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}),
-		...(typeof record.name === "string"
-			? { name: record.name }
-			: typeof meta.name === "string"
-				? { name: meta.name }
-				: {}),
-		...(typeof record.description === "string"
-			? { description: record.description }
-			: typeof meta.description === "string"
-				? { description: meta.description }
-				: {}),
+		...optionalString("sessionId", record),
+		...optionalString("name", record, meta),
+		...optionalString("description", record, meta),
 		background: record.background === true,
-		status,
+		status: normalizedStatus(record.status),
 		startedAt,
-		...(typeof record.finishedAt === "number" ? { finishedAt: record.finishedAt } : {}),
+		...(finishedAt === undefined ? {} : { finishedAt }),
 		phases,
-		...(typeof record.currentPhase === "string" ? { currentPhase: record.currentPhase } : {}),
+		...optionalString("currentPhase", record),
 		agents,
-		...(record.result === undefined ? {} : { result: record.result }),
-		...(typeof record.resultArtifact === "string" ? { resultArtifact: record.resultArtifact } : {}),
-		...(typeof record.transcriptArtifact === "string" ? { transcriptArtifact: record.transcriptArtifact } : {}),
-		...(typeof record.error === "string" ? { error: record.error } : {}),
+		...(result === undefined ? {} : { result }),
+		...optionalString("resultArtifact", record),
+		...optionalString("transcriptArtifact", record),
+		...optionalString("error", record),
 	};
 }
 
@@ -200,6 +215,62 @@ export function sessionWorkflowRunIds(ctx: ExtensionContext): Set<string> {
 	return runIds;
 }
 
+async function restoreResult(details: WorkflowDetails, runDir: string): Promise<void> {
+	if (!details.resultArtifact) return;
+	try {
+		details.result = JSON.parse(await fs.readFile(path.join(runDir, path.basename(details.resultArtifact)), "utf8"));
+	} catch {
+		// Keep the compact compatibility marker from workflow.json.
+	}
+}
+
+async function restoreTranscripts(details: WorkflowDetails, runDir: string): Promise<void> {
+	if (!details.transcriptArtifact) return;
+	try {
+		const transcripts = JSON.parse(
+			await fs.readFile(path.join(runDir, path.basename(details.transcriptArtifact)), "utf8"),
+		) as Record<string, unknown>;
+		for (const agent of details.agents) agent.transcript = normalizeTranscript(transcripts[String(agent.index)]);
+	} catch {
+		// Older or partially written artifacts simply lack transcripts.
+	}
+}
+
+function recoverStaleRun(details: WorkflowDetails): void {
+	if (details.status !== "running") return;
+	details.status = "aborted";
+	details.finishedAt = details.finishedAt ?? Date.now();
+	details.error = details.error ?? "Recovered stale run that was not active";
+	for (const agent of details.agents) {
+		if (agent.state !== "running") continue;
+		agent.state = "error";
+		agent.error = agent.error ?? "Run ended before this agent settled";
+		agent.finishedAt = details.finishedAt;
+	}
+}
+
+async function loadHistoricalRun(
+	active: Map<string, WorkflowDetails>,
+	sessionId: string,
+	referencedRunIds: ReadonlySet<string>,
+	runId: string,
+): Promise<RunEntry | undefined> {
+	const live = active.get(runId);
+	if (live) return { runId, details: live, live: true };
+	try {
+		const raw = JSON.parse(await fs.readFile(path.join(runsDir(), runId, "workflow.json"), "utf8"));
+		const details = normalizeDetails(runId, raw);
+		if (!details || (details.sessionId !== sessionId && !referencedRunIds.has(runId))) return undefined;
+		const runDir = path.join(runsDir(), runId);
+		await restoreResult(details, runDir);
+		await restoreTranscripts(details, runDir);
+		recoverStaleRun(details);
+		return { runId, details, live: false };
+	} catch {
+		return undefined;
+	}
+}
+
 export async function loadRunEntries(
 	active: Map<string, WorkflowDetails>,
 	sessionId: string,
@@ -208,53 +279,8 @@ export async function loadRunEntries(
 	const names = (await fs.readdir(runsDir()).catch(() => [] as string[])).filter((name) => name.startsWith("wf_"));
 	const entries: RunEntry[] = [];
 	for (const runId of names) {
-		const live = active.get(runId);
-		if (live) {
-			entries.push({ runId, details: live, live: true });
-			continue;
-		}
-		try {
-			const raw = JSON.parse(await fs.readFile(path.join(runsDir(), runId, "workflow.json"), "utf8"));
-			const details = normalizeDetails(runId, raw);
-			if (details && (details.sessionId === sessionId || referencedRunIds.has(runId))) {
-				const runDir = path.join(runsDir(), runId);
-				if (details.resultArtifact) {
-					try {
-						details.result = JSON.parse(
-							await fs.readFile(path.join(runDir, path.basename(details.resultArtifact)), "utf8"),
-						);
-					} catch {
-						// Keep the compact compatibility marker from workflow.json.
-					}
-				}
-				if (details.transcriptArtifact) {
-					try {
-						const transcripts = JSON.parse(
-							await fs.readFile(path.join(runDir, path.basename(details.transcriptArtifact)), "utf8"),
-						) as Record<string, unknown>;
-						for (const agent of details.agents) {
-							agent.transcript = normalizeTranscript(transcripts[String(agent.index)]);
-						}
-					} catch {
-						// Older or partially written artifacts simply lack transcripts.
-					}
-				}
-				if (details.status === "running") {
-					details.status = "aborted";
-					details.finishedAt = details.finishedAt ?? Date.now();
-					details.error = details.error ?? "Recovered stale run that was not active";
-					for (const agent of details.agents) {
-						if (agent.state !== "running") continue;
-						agent.state = "error";
-						agent.error = agent.error ?? "Run ended before this agent settled";
-						agent.finishedAt = details.finishedAt;
-					}
-				}
-				entries.push({ runId, details, live: false });
-			}
-		} catch {
-			// Skip unreadable runs.
-		}
+		const entry = await loadHistoricalRun(active, sessionId, referencedRunIds, runId);
+		if (entry) entries.push(entry);
 	}
 	return entries.sort((a, b) => b.details.startedAt - a.details.startedAt);
 }
@@ -300,6 +326,17 @@ function buildReport(details: WorkflowDetails): string {
 type View = "list" | "detail" | "transcript";
 type DetailFocus = "phases" | "agents";
 
+interface WorkflowDashboardOptions {
+	tui: TUI;
+	theme: Theme;
+	keybindings: KeybindingsManager;
+	getActive: () => Map<string, WorkflowDetails>;
+	sessionId: string;
+	referencedRunIds: ReadonlySet<string>;
+	close: () => void;
+	initialRunId?: string | undefined;
+}
+
 export class WorkflowDashboard {
 	private view: View = "list";
 	private entries: RunEntry[] = [];
@@ -326,24 +363,15 @@ export class WorkflowDashboard {
 	private refreshing = false;
 	private initialRunId: string | undefined;
 
-	constructor(
-		tui: TUI,
-		theme: Theme,
-		keybindings: KeybindingsManager,
-		getActive: () => Map<string, WorkflowDetails>,
-		sessionId: string,
-		referencedRunIds: ReadonlySet<string>,
-		close: () => void,
-		initialRunId?: string,
-	) {
-		this.tui = tui;
-		this.theme = theme;
-		this.keybindings = keybindings;
-		this.getActive = getActive;
-		this.sessionId = sessionId;
-		this.referencedRunIds = referencedRunIds;
-		this.close = close;
-		this.initialRunId = initialRunId;
+	constructor(options: WorkflowDashboardOptions) {
+		this.tui = options.tui;
+		this.theme = options.theme;
+		this.keybindings = options.keybindings;
+		this.getActive = options.getActive;
+		this.sessionId = options.sessionId;
+		this.referencedRunIds = options.referencedRunIds;
+		this.close = options.close;
+		this.initialRunId = options.initialRunId;
 		void this.refresh(true);
 		this.timer = setInterval(() => {
 			void this.refresh();
@@ -429,99 +457,110 @@ export class WorkflowDashboard {
 		this.tui.requestRender();
 	}
 
-	handleInput(data: string) {
-		const up = this.keybindings.matches(data, "tui.select.up") || data === "k";
-		const down = this.keybindings.matches(data, "tui.select.down") || data === "j";
-		const left = this.keybindings.matches(data, "tui.editor.cursorLeft") || data === "h";
-		const right = this.keybindings.matches(data, "tui.editor.cursorRight") || data === "l";
-		const confirm = this.keybindings.matches(data, "tui.select.confirm");
-		const cancel = this.keybindings.matches(data, "tui.select.cancel");
+	private input(data: string) {
+		return {
+			data,
+			up: this.keybindings.matches(data, "tui.select.up") || data === "k",
+			down: this.keybindings.matches(data, "tui.select.down") || data === "j",
+			left: this.keybindings.matches(data, "tui.editor.cursorLeft") || data === "h",
+			right: this.keybindings.matches(data, "tui.editor.cursorRight") || data === "l",
+			confirm: this.keybindings.matches(data, "tui.select.confirm"),
+			cancel: this.keybindings.matches(data, "tui.select.cancel"),
+		};
+	}
 
-		if (this.view === "list") {
-			if (up) {
-				this.listIndex = wrapSelection(this.listIndex, -1, this.entries.length);
-			} else if (down) {
-				this.listIndex = wrapSelection(this.listIndex, 1, this.entries.length);
-			} else if (data === "g") {
-				this.listIndex = 0;
-			} else if (data === "G") {
-				this.listIndex = Math.max(0, this.entries.length - 1);
-			} else if (confirm) {
-				const entry = this.entries[this.listIndex];
-				if (entry) {
-					this.current = entry;
-					this.phaseIndex = 0;
-					this.agentIndex = 0;
-					this.detailFocus = "phases";
-					this.view = "detail";
-				}
-			} else if (cancel) {
-				this.close();
-				return;
-			}
-		} else if (this.view === "detail") {
-			if (this.detailFocus === "phases") {
-				if (up) {
-					this.phaseIndex = wrapSelection(this.phaseIndex, -1, this.groups().length);
-					this.agentIndex = 0;
-				} else if (down) {
-					this.phaseIndex = wrapSelection(this.phaseIndex, 1, this.groups().length);
-					this.agentIndex = 0;
-				} else if (data === "g") {
-					this.phaseIndex = 0;
-					this.agentIndex = 0;
-				} else if (data === "G") {
-					this.phaseIndex = Math.max(0, this.groups().length - 1);
-					this.agentIndex = 0;
-				} else if (right || (confirm && (this.selectedGroup()?.agents.length ?? 0) > 0)) {
-					if ((this.selectedGroup()?.agents.length ?? 0) > 0) {
-						this.detailFocus = "agents";
-						this.clampAgentIndex();
-					}
-				} else if (cancel) {
-					this.view = "list";
-					void this.refresh();
-				}
-			} else {
-				const agents = this.selectedGroup()?.agents ?? [];
-				if (up) {
-					this.agentIndex = wrapSelection(this.agentIndex, -1, agents.length);
-				} else if (down) {
-					this.agentIndex = wrapSelection(this.agentIndex, 1, agents.length);
-				} else if (data === "g") {
-					this.agentIndex = 0;
-				} else if (data === "G") {
-					this.agentIndex = Math.max(0, agents.length - 1);
-				} else if (left || cancel) {
-					this.detailFocus = "phases";
-				} else if (confirm && this.selectedAgent()) {
-					this.transcriptScroll = 0;
-					this.view = "transcript";
-				}
-			}
-			if (data === "s") void this.saveReport();
-		} else {
-			const maxScroll = Math.max(0, this.transcriptRowCount - this.transcriptViewportSize);
-			const scrollStep = data === "j" || data === "k" ? TRANSCRIPT_SCROLL_STEP : 1;
-			const pageStep = Math.max(1, this.transcriptViewportSize - 2);
-			if (up) {
-				this.transcriptScroll = Math.max(0, this.transcriptScroll - scrollStep);
-			} else if (down) {
-				this.transcriptScroll = Math.min(maxScroll, this.transcriptScroll + scrollStep);
-			} else if (matchesKey(data, Key.ctrl("u"))) {
-				this.transcriptScroll = Math.max(0, this.transcriptScroll - pageStep);
-			} else if (matchesKey(data, Key.ctrl("d"))) {
-				this.transcriptScroll = Math.min(maxScroll, this.transcriptScroll + pageStep);
-			} else if (data === "g") {
-				this.transcriptScroll = 0;
-			} else if (data === "G") {
-				this.transcriptScroll = maxScroll;
-			} else if (cancel || left) {
-				this.view = "detail";
-				this.detailFocus = "agents";
-			}
+	private selectList(input: ReturnType<WorkflowDashboard["input"]>): boolean {
+		if (input.up) this.listIndex = wrapSelection(this.listIndex, -1, this.entries.length);
+		else if (input.down) this.listIndex = wrapSelection(this.listIndex, 1, this.entries.length);
+		else if (input.data === "g") this.listIndex = 0;
+		else if (input.data === "G") this.listIndex = Math.max(0, this.entries.length - 1);
+		else if (input.confirm) this.openSelectedRun();
+		else if (input.cancel) {
+			this.close();
+			return false;
 		}
-		this.tui.requestRender();
+		return true;
+	}
+
+	private openSelectedRun() {
+		const entry = this.entries[this.listIndex];
+		if (!entry) return;
+		this.current = entry;
+		this.phaseIndex = 0;
+		this.agentIndex = 0;
+		this.detailFocus = "phases";
+		this.view = "detail";
+	}
+
+	private selectPhase(input: ReturnType<WorkflowDashboard["input"]>) {
+		const groupCount = this.groups().length;
+		if (input.up || input.down) {
+			this.phaseIndex = wrapSelection(this.phaseIndex, input.up ? -1 : 1, groupCount);
+			this.agentIndex = 0;
+		} else if (input.data === "g" || input.data === "G") {
+			this.phaseIndex = input.data === "g" ? 0 : Math.max(0, groupCount - 1);
+			this.agentIndex = 0;
+		} else if (input.right || (input.confirm && (this.selectedGroup()?.agents.length ?? 0) > 0)) {
+			this.selectAgents();
+		} else if (input.cancel) {
+			this.view = "list";
+			void this.refresh();
+		}
+	}
+
+	private selectAgents() {
+		if ((this.selectedGroup()?.agents.length ?? 0) === 0) return;
+		this.detailFocus = "agents";
+		this.clampAgentIndex();
+	}
+
+	private selectAgent(input: ReturnType<WorkflowDashboard["input"]>) {
+		const agents = this.selectedGroup()?.agents ?? [];
+		if (input.up) this.agentIndex = wrapSelection(this.agentIndex, -1, agents.length);
+		else if (input.down) this.agentIndex = wrapSelection(this.agentIndex, 1, agents.length);
+		else if (input.data === "g") this.agentIndex = 0;
+		else if (input.data === "G") this.agentIndex = Math.max(0, agents.length - 1);
+		else if (input.left || input.cancel) this.detailFocus = "phases";
+		else if (input.confirm && this.selectedAgent()) {
+			this.transcriptScroll = 0;
+			this.view = "transcript";
+		}
+	}
+
+	private scrollTranscript(input: ReturnType<WorkflowDashboard["input"]>) {
+		const maxScroll = Math.max(0, this.transcriptRowCount - this.transcriptViewportSize);
+		const scrollStep = input.data === "j" || input.data === "k" ? TRANSCRIPT_SCROLL_STEP : 1;
+		const pageStep = Math.max(1, this.transcriptViewportSize - 2);
+		if (input.up) this.transcriptScroll = Math.max(0, this.transcriptScroll - scrollStep);
+		else if (input.down) this.transcriptScroll = Math.min(maxScroll, this.transcriptScroll + scrollStep);
+		else if (matchesKey(input.data, Key.ctrl("u")))
+			this.transcriptScroll = Math.max(0, this.transcriptScroll - pageStep);
+		else if (matchesKey(input.data, Key.ctrl("d")))
+			this.transcriptScroll = Math.min(maxScroll, this.transcriptScroll + pageStep);
+		else if (input.data === "g") this.transcriptScroll = 0;
+		else if (input.data === "G") this.transcriptScroll = maxScroll;
+		else if (input.cancel || input.left) {
+			this.view = "detail";
+			this.detailFocus = "agents";
+		}
+	}
+
+	handleInput(data: string) {
+		const input = this.input(data);
+		const shouldRender =
+			this.view === "list"
+				? this.selectList(input)
+				: this.view === "detail"
+					? this.selectDetail(input)
+					: (this.scrollTranscript(input), true);
+		if (shouldRender) this.tui.requestRender();
+	}
+
+	private selectDetail(input: ReturnType<WorkflowDashboard["input"]>): boolean {
+		if (this.detailFocus === "phases") this.selectPhase(input);
+		else this.selectAgent(input);
+		if (input.data === "s") void this.saveReport();
+		return true;
 	}
 
 	render(width: number): string[] {
@@ -630,95 +669,98 @@ export class WorkflowDashboard {
 		return lines;
 	}
 
-	private renderDetail(d: WorkflowDetails, width: number, height: number): string[] {
+	private renderDetailHeader(details: WorkflowDetails, width: number): string[] {
 		const theme = this.theme;
-		const lines: string[] = [];
-
-		const { done, failed } = countStates(d);
-		const settled = done + failed;
+		const { done, failed } = countStates(details);
 		const right =
-			theme.fg("dim", `${settled}/${d.agents.length} agents · ${formatElapsed(d.startedAt, d.finishedAt)} · `) +
-			theme.fg(statusColor(d.status), statusWord(d.status)) +
+			theme.fg(
+				"dim",
+				`${done + failed}/${details.agents.length} agents · ${formatElapsed(details.startedAt, details.finishedAt)} · `,
+			) +
+			theme.fg(statusColor(details.status), statusWord(details.status)) +
 			" ";
-		lines.push(this.split(" " + theme.bold(theme.fg("accent", d.name ?? d.runId)), right, width));
-		const totals = formatUsage(aggregateUsage(d.agents));
-		const subLeft = " " + theme.fg("muted", d.description ?? d.runId);
-		lines.push(this.split(subLeft, totals ? theme.fg("dim", `${totals} `) : " ", width));
+		const title = this.split(" " + theme.bold(theme.fg("accent", details.name ?? details.runId)), right, width);
+		const totals = formatUsage(aggregateUsage(details.agents));
+		const subtitle = this.split(
+			" " + theme.fg("muted", details.description ?? details.runId),
+			totals ? theme.fg("dim", `${totals} `) : " ",
+			width,
+		);
+		return [title, subtitle];
+	}
 
+	private phaseRows(groups: PhaseGroup[], bodyHeight: number, sidebarInner: number): string[] {
+		const theme = this.theme;
+		const phaseWindow = this.windowed(groups, this.phaseIndex, bodyHeight);
+		return phaseWindow.items.map((group, visibleIndex) => {
+			const selected = phaseWindow.offset + visibleIndex === this.phaseIndex;
+			const marker = selected ? theme.fg(this.detailFocus === "phases" ? "accent" : "muted", "❯") : " ";
+			const completed = group.agents.filter((agent) => agent.state !== "running").length;
+			const title = theme.fg(selected && this.detailFocus === "phases" ? "accent" : "text", group.title);
+			const counts = group.agents.length ? `${completed}/${group.agents.length} ` : "- ";
+			return this.split(` ${marker} ${groupSquare(group, theme)} ${title}`, theme.fg("dim", counts), sidebarInner);
+		});
+	}
+
+	private agentRows(
+		details: WorkflowDetails,
+		selectedGroup: PhaseGroup | undefined,
+		bodyHeight: number,
+		agentsInner: number,
+	): string[] {
+		const theme = this.theme;
+		const rows = selectedGroup ? this.visibleAgentRows(selectedGroup, bodyHeight, agentsInner) : [];
+		if (selectedGroup?.agents.length === 0) rows.push(theme.fg("dim", " no agents in this phase yet"));
+		if (details.error) {
+			rows.push("");
+			rows.push(truncateToWidth(` ${theme.fg("error", `workflow error: ${details.error}`)}`, agentsInner, "…"));
+		}
+		return rows;
+	}
+
+	private visibleAgentRows(group: PhaseGroup, bodyHeight: number, agentsInner: number): string[] {
+		const theme = this.theme;
+		const maxLabel = Math.max(0, ...group.agents.map((agent) => agent.label.length));
+		const agentWindow = this.windowed(group.agents, this.agentIndex, bodyHeight);
+		return agentWindow.items.flatMap((agent, visibleIndex) => {
+			const selected = agentWindow.offset + visibleIndex === this.agentIndex;
+			const active = selected && this.detailFocus === "agents";
+			const marker = active ? theme.fg("accent", "❯") : " ";
+			const label = theme.fg(active ? "accent" : "text", agent.label.padEnd(Math.min(maxLabel, 40)));
+			const stats = theme.fg("dim", [agent.model, agentContext(agent)].filter(Boolean).join(" · "));
+			const left = ` ${marker} ${stateSquare(agent.state, theme)} ${label}  ${stats}`;
+			const right = theme.fg("dim", `${formatElapsed(agent.startedAt, agent.finishedAt)} `);
+			const row = this.split(left, right, agentsInner);
+			return agent.error ? [row, truncateToWidth(`       ${theme.fg("error", agent.error)}`, agentsInner, "…")] : [row];
+		});
+	}
+
+	private detailHint(): string {
+		return this.detailFocus === "phases"
+			? `j/k select phase · l/${this.keys("tui.editor.cursorRight")}/${this.keys("tui.select.confirm")} agents · ${this.keys("tui.select.cancel")} back · s save report`
+			: `j/k select agent · h/${this.keys("tui.editor.cursorLeft")}/${this.keys("tui.select.cancel")} phases · ${this.keys("tui.select.confirm")} transcript · s save report`;
+	}
+
+	private renderDetail(details: WorkflowDetails, width: number, height: number): string[] {
 		const groups = this.groups();
 		this.phaseIndex = Math.min(this.phaseIndex, Math.max(0, groups.length - 1));
-		const selectedGroup = groups[this.phaseIndex];
 		this.clampAgentIndex();
-
+		const selectedGroup = groups[this.phaseIndex];
 		const panelHeight = height - 3;
 		const bodyHeight = Math.max(0, panelHeight - 2);
-
-		// Left: phases sidebar.
-		const maxTitle = Math.max(8, ...groups.map((g) => g.title.length));
+		const maxTitle = Math.max(8, ...groups.map((group) => group.title.length));
 		const sidebarWidth = Math.min(Math.max(maxTitle + 12, 20), Math.floor(width / 3));
-		const sidebarInner = sidebarWidth - 2;
-		const phaseWindow = this.windowed(groups, this.phaseIndex, bodyHeight);
-		const phaseRows = phaseWindow.items.map((group, i) => {
-			const index = phaseWindow.offset + i;
-			const selected = index === this.phaseIndex;
-			const marker = selected ? theme.fg(this.detailFocus === "phases" ? "accent" : "muted", "❯") : " ";
-			const groupDone = group.agents.filter((a) => a.state !== "running").length;
-			const square = groupSquare(group, theme);
-			const title =
-				selected && this.detailFocus === "phases" ? theme.fg("accent", group.title) : theme.fg("text", group.title);
-			const counts =
-				group.agents.length > 0 ? theme.fg("dim", `${groupDone}/${group.agents.length} `) : theme.fg("dim", "- ");
-			return this.split(` ${marker} ${square} ${title}`, counts, sidebarInner);
-		});
-
-		// Right: agents in the selected phase.
 		const agentsWidth = width - sidebarWidth - 1;
-		const agentsInner = agentsWidth - 2;
-		const agentRows: string[] = [];
-		if (selectedGroup) {
-			const maxLabel = Math.max(0, ...selectedGroup.agents.map((a) => a.label.length));
-			const agentWindow = this.windowed(selectedGroup.agents, this.agentIndex, bodyHeight);
-			for (const [visibleIndex, agent] of agentWindow.items.entries()) {
-				const index = agentWindow.offset + visibleIndex;
-				const selected = index === this.agentIndex;
-				const marker = selected && this.detailFocus === "agents" ? theme.fg("accent", "❯") : " ";
-				const stats = [agent.model, agentContext(agent)].filter(Boolean).join(" · ");
-				const label =
-					selected && this.detailFocus === "agents"
-						? theme.fg("accent", agent.label.padEnd(Math.min(maxLabel, 40)))
-						: theme.fg("text", agent.label.padEnd(Math.min(maxLabel, 40)));
-				const left = ` ${marker} ${stateSquare(agent.state, theme)} ${label}  ${theme.fg("dim", stats)}`;
-				const right = theme.fg("dim", `${formatElapsed(agent.startedAt, agent.finishedAt)} `);
-				agentRows.push(this.split(left, right, agentsInner));
-				if (agent.error) {
-					agentRows.push(truncateToWidth(`       ${theme.fg("error", agent.error)}`, agentsInner, "…"));
-				}
-			}
-			if (selectedGroup.agents.length === 0) {
-				agentRows.push(theme.fg("dim", " no agents in this phase yet"));
-			}
-		}
-		if (d.error) {
-			agentRows.push("");
-			agentRows.push(truncateToWidth(` ${theme.fg("error", `workflow error: ${d.error}`)}`, agentsInner, "…"));
-		}
-
+		const phaseRows = this.phaseRows(groups, bodyHeight, sidebarWidth - 2);
+		const agentRows = this.agentRows(details, selectedGroup, bodyHeight, agentsWidth - 2);
 		const agentCount = selectedGroup?.agents.length ?? 0;
 		const agentsTitle = selectedGroup
 			? `${selectedGroup.title} · ${agentCount} agent${agentCount === 1 ? "" : "s"}`
 			: "Agents";
 		const leftPanel = this.panel("Phases", phaseRows, sidebarWidth, panelHeight);
 		const rightPanel = this.panel(agentsTitle, agentRows, agentsWidth, panelHeight);
-		for (let i = 0; i < panelHeight; i++) {
-			lines.push(`${leftPanel[i] ?? ""} ${rightPanel[i] ?? ""}`);
-		}
-
-		const hint =
-			this.detailFocus === "phases"
-				? `j/k select phase · l/${this.keys("tui.editor.cursorRight")}/${this.keys("tui.select.confirm")} agents · ${this.keys("tui.select.cancel")} back · s save report`
-				: `j/k select agent · h/${this.keys("tui.editor.cursorLeft")}/${this.keys("tui.select.cancel")} phases · ${this.keys("tui.select.confirm")} transcript · s save report`;
-		lines.push(this.hintLine(hint, width));
-		return lines;
+		const panels = leftPanel.map((line, index) => `${line} ${rightPanel[index] ?? ""}`);
+		return [...this.renderDetailHeader(details, width), ...panels, this.hintLine(this.detailHint(), width)];
 	}
 
 	private transcriptRows(agent: AgentRecord, width: number): string[] {
@@ -815,19 +857,19 @@ export async function showWorkflowDashboard(
 ): Promise<void> {
 	await ctx.ui.custom<void>(
 		(tui, theme, keybindings, done) => {
-			const dashboard: WorkflowDashboard = new WorkflowDashboard(
+			const dashboard: WorkflowDashboard = new WorkflowDashboard({
 				tui,
 				theme,
 				keybindings,
 				getActive,
-				ctx.sessionManager.getSessionId(),
-				sessionWorkflowRunIds(ctx),
-				() => {
+				sessionId: ctx.sessionManager.getSessionId(),
+				referencedRunIds: sessionWorkflowRunIds(ctx),
+				close: () => {
 					dashboard.dispose();
 					done(undefined);
 				},
 				initialRunId,
-			);
+			});
 			return dashboard;
 		},
 		{

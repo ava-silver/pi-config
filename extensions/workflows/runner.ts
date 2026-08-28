@@ -393,192 +393,228 @@ function isAssistantResponseEvent(event: AgentSessionEvent) {
 	);
 }
 
-export async function runAgent(options: RunAgentOptions): Promise<AgentOutcome> {
+interface WorkflowChildAgent {
+	session: AgentSession;
+	unsubscribeToolTimeout: () => void;
+	structured: () => unknown;
+}
+
+interface AgentRunState {
+	usage: AgentUsage;
+	modelId: string | undefined;
+	contextWindow: number | undefined;
+	stopReason?: string;
+	errorMessage?: string;
+	aborted: boolean;
+	abortPromise?: Promise<void>;
+	toolTimings: Map<string, ToolExecutionTiming>;
+}
+
+async function createWorkflowChildAgent(options: RunAgentOptions): Promise<WorkflowChildAgent> {
 	let structured: unknown;
-	let customTools: ToolDefinition[] | undefined;
-	let session: AgentSession | undefined;
-	let unsubscribeToolTimeout: (() => void) | undefined;
+	const customTools =
+		options.schema === undefined
+			? undefined
+			: [
+					makeStructuredOutputTool(options.schema, (value) => {
+						structured = value;
+					}),
+				];
+	const { session } = await createAgentSession({
+		cwd: options.cwd,
+		...(options.model ? { model: options.model } : {}),
+		...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
+		resourceLoader: options.loader,
+		settingsManager: options.settingsManager,
+		sessionManager: SessionManager.inMemory(options.cwd),
+		...(customTools ? { customTools } : {}),
+		...childToolPolicy(),
+	});
 	try {
-		customTools =
-			options.schema !== undefined
-				? [
-						makeStructuredOutputTool(options.schema, (value) => {
-							structured = value;
-						}),
-					]
-				: undefined;
-		({ session } = await createAgentSession({
-			cwd: options.cwd,
-			...(options.model ? { model: options.model } : {}),
-			...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
-			resourceLoader: options.loader,
-			settingsManager: options.settingsManager,
-			sessionManager: SessionManager.inMemory(options.cwd),
-			...(customTools ? { customTools } : {}),
-			...childToolPolicy(),
-		}));
 		await bindChildSessionExtensions(session);
-		unsubscribeToolTimeout = guardWorkflowChildTools(session, options.toolCallTimeoutMs);
-	} catch (error) {
-		unsubscribeToolTimeout?.();
-		if (session) await shutdownAndDisposeChildSession(session);
 		return {
-			ok: false,
-			output: "",
-			error: `Failed to create agent session: ${errorText(error)}`,
-			aborted: false,
-			usage: emptyUsage(),
-			...modelMetadata(options.model?.id, options.model?.contextWindow),
-			transcript: [],
+			session,
+			unsubscribeToolTimeout: guardWorkflowChildTools(session, options.toolCallTimeoutMs),
+			structured: () => structured,
 		};
+	} catch (error) {
+		await shutdownAndDisposeChildSession(session);
+		throw error;
 	}
+}
 
-	const childSession = session;
-	let usage = emptyUsage();
-	let modelId = childSession.model?.id ?? options.model?.id;
-	let contextWindow = childSession.model?.contextWindow;
-	let stopReason: string | undefined;
-	let errorMessage: string | undefined;
-	const toolTimings = new Map<string, ToolExecutionTiming>();
-
-	const sync = () => {
-		const messages = childSession.messages;
-		usage = computeUsage(messages);
-
-		const sessionModel = childSession.model;
-		modelId = sessionModel?.id ?? modelId;
-		contextWindow = sessionModel?.contextWindow ?? contextWindow;
-		const context = childSession.getContextUsage();
-		if (typeof context?.tokens === "number" && Number.isFinite(context.tokens) && context.tokens >= 0) {
-			usage.contextTokens = context.tokens;
-		}
-		if (
-			typeof context?.contextWindow === "number" &&
-			Number.isFinite(context.contextWindow) &&
-			context.contextWindow > 0
-		) {
-			contextWindow = context.contextWindow;
-		}
-
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (!isAssistantMessage(msg)) continue;
-			// Some gateways report a concrete fallback model. Prefer its registry
-			// metadata when available so capacity tracks the model that served the
-			// latest response rather than a hardcoded/configured guess.
-			const responseMatchesSession =
-				!sessionModel || (msg.provider === sessionModel.provider && msg.model === sessionModel.id);
-			const reportedId = msg.responseModel ?? msg.model;
-			const reportedModel = responseMatchesSession ? options.modelRegistry.find(msg.provider, reportedId) : undefined;
-			if (reportedModel) {
-				modelId = reportedModel.id;
-				contextWindow = reportedModel.contextWindow;
-			}
-			if (msg.stopReason) stopReason = msg.stopReason;
-			if (msg.errorMessage) errorMessage = msg.errorMessage;
-			break;
-		}
+function creationFailure(options: RunAgentOptions, error: unknown): AgentOutcome {
+	return {
+		ok: false,
+		output: "",
+		error: `Failed to create agent session: ${errorText(error)}`,
+		aborted: false,
+		usage: emptyUsage(),
+		...modelMetadata(options.model?.id, options.model?.contextWindow),
+		transcript: [],
 	};
+}
 
-	let markFirstResponse = () => {};
-	const unsubscribe = childSession.subscribe((event) => {
-		if (isAssistantResponseEvent(event)) markFirstResponse();
+function createAgentRunState(session: AgentSession, options: RunAgentOptions): AgentRunState {
+	return {
+		usage: emptyUsage(),
+		modelId: session.model?.id ?? options.model?.id,
+		contextWindow: session.model?.contextWindow,
+		aborted: false,
+		toolTimings: new Map(),
+	};
+}
+
+function syncAgentState(session: AgentSession, state: AgentRunState, options: RunAgentOptions) {
+	const messages = session.messages;
+	state.usage = computeUsage(messages);
+	const sessionModel = session.model;
+	state.modelId = sessionModel?.id ?? state.modelId;
+	state.contextWindow = sessionModel?.contextWindow ?? state.contextWindow;
+	const context = session.getContextUsage();
+	if (typeof context?.tokens === "number" && Number.isFinite(context.tokens) && context.tokens >= 0) {
+		state.usage.contextTokens = context.tokens;
+	}
+	if (
+		typeof context?.contextWindow === "number" &&
+		Number.isFinite(context.contextWindow) &&
+		context.contextWindow > 0
+	) {
+		state.contextWindow = context.contextWindow;
+	}
+	updateResponseMetadata(messages, sessionModel, state, options.modelRegistry);
+}
+
+function updateResponseMetadata(
+	messages: AgentMessage[],
+	sessionModel: WorkflowModel | undefined,
+	state: AgentRunState,
+	modelRegistry: ExtensionContext["modelRegistry"],
+) {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (!isAssistantMessage(message)) continue;
+		const matchesSession =
+			!sessionModel || (message.provider === sessionModel.provider && message.model === sessionModel.id);
+		const reportedModel = matchesSession
+			? modelRegistry.find(message.provider, message.responseModel ?? message.model)
+			: undefined;
+		if (reportedModel) {
+			state.modelId = reportedModel.id;
+			state.contextWindow = reportedModel.contextWindow;
+		}
+		if (message.stopReason) state.stopReason = message.stopReason;
+		if (message.errorMessage) state.errorMessage = message.errorMessage;
+		return;
+	}
+}
+
+function subscribeToAgentProgress(
+	session: AgentSession,
+	state: AgentRunState,
+	options: RunAgentOptions,
+	responseMarker: { mark: () => void },
+) {
+	return session.subscribe((event) => {
+		if (isAssistantResponseEvent(event)) responseMarker.mark();
 		if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
-			recordToolExecutionTiming(toolTimings, event);
+			recordToolExecutionTiming(state.toolTimings, event);
 		} else if (event.type !== "message_end" && event.type !== "compaction_end") {
 			return;
 		}
-		sync();
+		syncAgentState(session, state, options);
 		options.onProgress?.({
-			preview: finalOutput(childSession.messages),
-			usage,
-			...modelMetadata(modelId, contextWindow),
-			transcript: transcriptFromMessages(childSession.messages, toolTimings),
+			preview: finalOutput(session.messages),
+			usage: state.usage,
+			...modelMetadata(state.modelId, state.contextWindow),
+			transcript: transcriptFromMessages(session.messages, state.toolTimings),
 		});
 	});
+}
 
-	let aborted = false;
-	let abortPromise: Promise<void> | undefined;
+function observeAbort(signal: AbortSignal | undefined, session: AgentSession, state: AgentRunState) {
 	const onAbort = () => {
-		aborted = true;
-		abortPromise ??= childSession.abort().catch(() => {});
+		state.aborted = true;
+		state.abortPromise ??= session.abort().catch(() => {});
 	};
-	if (options.signal) {
-		if (options.signal.aborted) onAbort();
-		else options.signal.addEventListener("abort", onAbort, { once: true });
-	}
+	if (signal?.aborted) onAbort();
+	else signal?.addEventListener("abort", onAbort, { once: true });
+	return () => signal?.removeEventListener("abort", onAbort);
+}
 
-	let output = "";
-	let transcript: TranscriptEntry[] = [];
-	try {
-		if (!aborted) {
-			const watchdog = createFirstResponseWatchdog(() => childSession.abort(), {
-				...(options.firstResponseTimeoutMs === undefined ? {} : { timeoutMs: options.firstResponseTimeoutMs }),
-				...(modelId === undefined ? {} : { model: modelId }),
-			});
-			markFirstResponse = watchdog.markResponse;
-			await watchdog.waitFor(childSession.prompt(buildWorkflowAgentPrompt(options.prompt)));
-		}
-	} catch (error) {
-		errorMessage = errorMessage ?? errorText(error);
-		stopReason = stopReason ?? "error";
-	} finally {
-		options.signal?.removeEventListener("abort", onAbort);
-		if (abortPromise) await abortPromise;
-		unsubscribe();
-		unsubscribeToolTimeout?.();
-		sync();
-		output = truncateUtf8(finalOutput(childSession.messages), AGENT_OUTPUT_MAX_BYTES);
-		transcript = transcriptFromMessages(childSession.messages, toolTimings);
-		await shutdownAndDisposeChildSession(childSession);
-	}
+async function finishAgentRun(
+	child: WorkflowChildAgent,
+	state: AgentRunState,
+	options: RunAgentOptions,
+	unsubscribe: () => void,
+	stopObservingAbort: () => void,
+) {
+	stopObservingAbort();
+	if (state.abortPromise) await state.abortPromise;
+	unsubscribe();
+	child.unsubscribeToolTimeout();
+	syncAgentState(child.session, state, options);
+	const output = truncateUtf8(finalOutput(child.session.messages), AGENT_OUTPUT_MAX_BYTES);
+	const transcript = transcriptFromMessages(child.session.messages, state.toolTimings);
+	await shutdownAndDisposeChildSession(child.session);
+	return { output, transcript };
+}
 
-	if (aborted || stopReason === "aborted") {
-		return {
-			ok: false,
-			output,
-			...(structured === undefined ? {} : { structured }),
-			error: "Agent was aborted",
-			aborted: true,
-			usage,
-			...modelMetadata(modelId, contextWindow),
-			transcript,
-		};
+function agentOutcome(
+	options: RunAgentOptions,
+	child: WorkflowChildAgent,
+	state: AgentRunState,
+	result: { output: string; transcript: TranscriptEntry[] },
+): AgentOutcome {
+	const structured = child.structured();
+	const common = {
+		output: result.output,
+		...(structured === undefined ? {} : { structured }),
+		usage: state.usage,
+		...modelMetadata(state.modelId, state.contextWindow),
+		transcript: result.transcript,
+	};
+	if (state.aborted || state.stopReason === "aborted") {
+		return { ok: false, ...common, error: "Agent was aborted", aborted: true };
 	}
-
-	const failed = stopReason === "error" || errorMessage !== undefined;
-	if (failed) {
-		return {
-			ok: false,
-			output,
-			...(structured === undefined ? {} : { structured }),
-			error: errorMessage ?? "Agent failed",
-			aborted: false,
-			usage,
-			...modelMetadata(modelId, contextWindow),
-			transcript,
-		};
+	if (state.stopReason === "error" || state.errorMessage !== undefined) {
+		return { ok: false, ...common, error: state.errorMessage ?? "Agent failed", aborted: false };
 	}
-
 	if (options.schema !== undefined && structured === undefined) {
 		return {
 			ok: false,
-			output,
+			...common,
 			error: "Agent finished without calling structured_output; no structured result matching the schema was produced.",
 			aborted: false,
-			usage,
-			...modelMetadata(modelId, contextWindow),
-			transcript,
 		};
 	}
+	return { ok: true, ...common, aborted: false };
+}
 
-	return {
-		ok: true,
-		output,
-		...(structured === undefined ? {} : { structured }),
-		aborted: false,
-		usage,
-		...modelMetadata(modelId, contextWindow),
-		transcript,
-	};
+export async function runAgent(options: RunAgentOptions): Promise<AgentOutcome> {
+	let child: WorkflowChildAgent;
+	try {
+		child = await createWorkflowChildAgent(options);
+	} catch (error) {
+		return creationFailure(options, error);
+	}
+	const state = createAgentRunState(child.session, options);
+	const responseMarker = { mark: () => {} };
+	const unsubscribe = subscribeToAgentProgress(child.session, state, options, responseMarker);
+	const stopObservingAbort = observeAbort(options.signal, child.session, state);
+	try {
+		if (!state.aborted) {
+			const watchdog = createFirstResponseWatchdog(() => child.session.abort(), {
+				...(options.firstResponseTimeoutMs === undefined ? {} : { timeoutMs: options.firstResponseTimeoutMs }),
+				...(state.modelId === undefined ? {} : { model: state.modelId }),
+			});
+			responseMarker.mark = watchdog.markResponse;
+			await watchdog.waitFor(child.session.prompt(buildWorkflowAgentPrompt(options.prompt)));
+		}
+	} catch (error) {
+		state.errorMessage ??= errorText(error);
+		state.stopReason ??= "error";
+	}
+	const result = await finishAgentRun(child, state, options, unsubscribe, stopObservingAbort);
+	return agentOutcome(options, child, state, result);
 }

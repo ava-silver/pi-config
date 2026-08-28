@@ -191,366 +191,390 @@ function boundedError(error: unknown) {
 	return (error instanceof Error ? error.message : String(error)).slice(0, 4096);
 }
 
+interface PiSessionState {
+	closed: boolean;
+	runError: string | undefined;
+	settled: boolean;
+	questionCounter: number;
+}
+
+type Emit = (event: SubagentEvent) => void;
+type PendingAnswer = {
+	resolve: (answer: string) => void;
+	reject: (error: Error) => void;
+	removeAbortListener: () => void;
+};
+
+function createAskParentTool(state: PiSessionState, emit: Emit, pendingAnswers: Map<string, PendingAnswer>) {
+	return defineTool({
+		name: "ask_parent",
+		label: "Ask Parent",
+		description:
+			"Ask the parent agent for missing context or a decision, then wait for its response. Use this instead of guessing when clarification would materially affect the work.",
+		promptSnippet: "Ask the parent agent for missing context or a decision, then wait for its answer",
+		promptGuidelines: [
+			"Use ask_parent when missing context or an ambiguous decision blocks reliable progress; continue independent work without asking when possible.",
+		],
+		parameters: Type.Object({
+			question: Type.String({
+				description: "The specific question the parent agent should answer",
+			}),
+		}),
+		async execute(_toolCallId, params, signal) {
+			if (state.closed) throw new Error("The parent session is no longer available.");
+			const id = `q-${++state.questionCounter}`;
+			const answer = await new Promise<string>((resolve, reject) => {
+				const abort = () => {
+					if (!pendingAnswers.delete(id)) return;
+					emit({ _tag: "QuestionClosed", questionId: id });
+					reject(new Error("Parent question was cancelled."));
+				};
+				signal?.addEventListener("abort", abort, { once: true });
+				pendingAnswers.set(id, {
+					resolve,
+					reject,
+					removeAbortListener: () => signal?.removeEventListener("abort", abort),
+				});
+				if (signal?.aborted) {
+					abort();
+					return;
+				}
+				emit({
+					_tag: "QuestionAsked",
+					question: { id, text: params.question },
+				});
+			});
+			return {
+				content: [{ type: "text", text: `Parent response: ${answer}` }],
+				details: { question: params.question, answer },
+			};
+		},
+	});
+}
+
+interface ChildSessionSetup {
+	task: SpawnTask;
+	model: Model<any> | undefined;
+	thinkingLevel: ThinkingLevel | undefined;
+	askParentTool: ReturnType<typeof defineTool>;
+}
+
+function createChildSession(setup: ChildSessionSetup) {
+	return Effect.tryPromise({
+		try: async () => {
+			const { loader, settingsManager } = await createChildResources({
+				cwd: setup.task.cwd,
+				projectTrusted: setup.task.parent.projectTrusted,
+				excludedExtensionBasenames: ["google-style.ts"],
+			});
+			const { session } = await createAgentSession({
+				cwd: setup.task.cwd,
+				sessionManager: SessionManager.create(setup.task.cwd),
+				settingsManager,
+				resourceLoader: loader,
+				...(setup.model === undefined ? {} : { model: setup.model }),
+				...(setup.thinkingLevel === undefined ? {} : { thinkingLevel: setup.thinkingLevel }),
+				customTools: [setup.askParentTool],
+				...childToolPolicy(),
+			});
+			try {
+				await bindChildSessionExtensions(session);
+			} catch (error) {
+				await shutdownAndDisposeChildSession(session);
+				throw error;
+			}
+			return session;
+		},
+		catch: (error) => new SpawnError({ message: boundedError(error) }),
+	});
+}
+
+interface SessionControl {
+	currentMeta(): SubagentMeta;
+	handleEvent(event: AgentSessionEvent): void;
+	startRun(text: string): void;
+}
+
+interface SessionControlSetup {
+	session: AgentSession;
+	registry: NonNullable<SpawnTask["parent"]["modelRegistry"]>;
+	state: PiSessionState;
+	emit: Emit;
+	toolTimeout: ReturnType<typeof createToolCallTimeoutGuard>;
+}
+
+function createSessionControl(setup: SessionControlSetup): SessionControl {
+	const { session, registry, state, emit, toolTimeout } = setup;
+	const activeModel = (): Model<any> | undefined => {
+		const sessionModel = session.model;
+		const last = lastAssistantMessage(session);
+		if (!last || (sessionModel && (last.provider !== sessionModel.provider || last.model !== sessionModel.id)))
+			return sessionModel;
+		return registry.find(last.provider, last.responseModel ?? last.model) ?? sessionModel;
+	};
+	const currentMeta = (): SubagentMeta => {
+		const model = activeModel();
+		return {
+			...(model ? { modelLabel: `${model.provider}/${model.id}` } : {}),
+			...(model?.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+			...(session.sessionFile === undefined ? {} : { sessionFilePath: session.sessionFile }),
+		};
+	};
+	const emitUsage = () => {
+		const usage = session.getContextUsage();
+		const tokens = usage?.tokens;
+		const contextWindow = activeModel()?.contextWindow ?? usage?.contextWindow;
+		emit({
+			_tag: "UsageChanged",
+			...(typeof tokens === "number" ? { tokens } : {}),
+			...(contextWindow === undefined ? {} : { contextWindow }),
+		});
+	};
+	const settle = () => {
+		if (state.settled) return;
+		state.settled = true;
+		const last = lastAssistantMessage(session);
+		const partialText = finalOutput(session) || undefined;
+		if (last?.stopReason === "aborted") {
+			emit({
+				_tag: "RunSettled",
+				outcome: {
+					_tag: "Interrupted",
+					...(partialText === undefined ? {} : { partialText }),
+				},
+			});
+			return;
+		}
+		const errorText =
+			state.runError ?? (last?.stopReason === "error" ? (last.errorMessage ?? "Run failed") : undefined);
+		if (errorText !== undefined) {
+			emit({
+				_tag: "RunSettled",
+				outcome: {
+					_tag: "Failed",
+					errorText: boundedError(errorText),
+					...(partialText === undefined ? {} : { partialText }),
+				},
+			});
+			return;
+		}
+		emit({
+			_tag: "RunSettled",
+			outcome: { _tag: "Completed", finalText: finalOutput(session) },
+		});
+	};
+	const handleEvent = (event: AgentSessionEvent) => {
+		if (state.closed) return;
+		switch (event.type) {
+			case "agent_start":
+				toolTimeout.apply(session);
+				state.settled = false;
+				emit({ _tag: "RunStarted" });
+				break;
+			case "message_update": {
+				const streamEvent = event.assistantMessageEvent;
+				if (streamEvent.type === "text_delta")
+					emit({
+						_tag: "AssistantDelta",
+						kind: "text",
+						delta: streamEvent.delta,
+					});
+				else if (streamEvent.type === "thinking_delta")
+					emit({
+						_tag: "AssistantDelta",
+						kind: "thinking",
+						delta: streamEvent.delta,
+					});
+				break;
+			}
+			case "message_end": {
+				const role = messageRole(event.message);
+				if (role === "user") {
+					const text = userText(event.message as Message);
+					if (text.trim()) emit({ _tag: "UserMessage", text });
+				} else if (role === "assistant") {
+					const cost = (event.message as AssistantMessage).usage?.cost?.total;
+					emit({
+						_tag: "AssistantMessage",
+						parts: assistantParts(event.message as AssistantMessage),
+						...(typeof cost === "number" && Number.isFinite(cost) ? { cost } : {}),
+					});
+					emitUsage();
+					emit({ _tag: "MetaChanged", meta: currentMeta() });
+				}
+				break;
+			}
+			case "tool_execution_start": {
+				const argsPreview = toolCallPreview(event.toolName, event.args);
+				emit({
+					_tag: "ToolStart",
+					toolId: event.toolCallId,
+					name: event.toolName,
+					...(argsPreview === undefined ? {} : { argsPreview }),
+				});
+				break;
+			}
+			case "tool_execution_update": {
+				const outputPreview = toolPreview(event.partialResult);
+				emit({
+					_tag: "ToolUpdate",
+					toolId: event.toolCallId,
+					...(outputPreview === undefined ? {} : { outputPreview }),
+				});
+				break;
+			}
+			case "tool_execution_end": {
+				const outputPreview = toolPreview(event.result);
+				emit({
+					_tag: "ToolEnd",
+					toolId: event.toolCallId,
+					name: event.toolName,
+					isError: event.isError,
+					...(outputPreview === undefined ? {} : { outputPreview }),
+				});
+				break;
+			}
+			case "queue_update":
+				emit({
+					_tag: "QueueChanged",
+					queued: [
+						...event.steering.map((text) => ({ text, kind: "steer" as const })),
+						...event.followUp.map((text) => ({
+							text,
+							kind: "follow-up" as const,
+						})),
+					],
+				});
+				break;
+			case "agent_settled":
+				settle();
+				break;
+		}
+	};
+	const startRun = (text: string) => {
+		state.runError = undefined;
+		state.settled = false;
+		emit({ _tag: "RunStarted" });
+		void session.prompt(text).catch((error) => {
+			state.runError = boundedError(error);
+			if (!session.isStreaming) settle();
+		});
+	};
+	return { currentMeta, handleEvent, startRun };
+}
+
+interface FinalizerSetup {
+	session: AgentSession;
+	state: PiSessionState;
+	pendingAnswers: Map<string, PendingAnswer>;
+	unsubscribe: () => void;
+	events: Queue.Queue<SubagentEvent, Cause.Done>;
+}
+
+function closePiSession(setup: FinalizerSetup) {
+	return Effect.promise(async () => {
+		setup.state.closed = true;
+		for (const pending of setup.pendingAnswers.values()) {
+			pending.removeAbortListener();
+			pending.reject(new Error("Subagent session closed before the parent answered."));
+		}
+		setup.pendingAnswers.clear();
+		setup.unsubscribe();
+		try {
+			setup.session.clearQueue();
+		} catch {}
+		await waitForChildSessionOperation(setup.session.abort(), 5_000);
+		await shutdownAndDisposeChildSession(setup.session);
+		Queue.endUnsafe(setup.events);
+	});
+}
+
+function interruptPiSession(session: AgentSession, state: PiSessionState, emit: Emit) {
+	return Effect.promise(async () => {
+		if (state.closed) return;
+		try {
+			session.clearQueue();
+		} catch {}
+		await session.abort().catch(() => undefined);
+		while (!state.closed && session.isStreaming) await new Promise((resolve) => setTimeout(resolve, 50));
+		if (!state.closed && !state.settled) {
+			state.settled = true;
+			emit({ _tag: "RunSettled", outcome: { _tag: "Interrupted" } });
+		}
+	});
+}
+
 export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, SpawnError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const registry = task.parent.modelRegistry;
-		if (!registry) {
+		if (!registry)
 			return yield* new SpawnError({
 				message: "pi backend requires the parent session's model registry.",
 			});
-		}
-
 		const model = yield* Effect.try({
 			try: () => resolveChildModel(registry, task.model, task.parent.inheritedModel),
 			catch: (error) => new SpawnError({ message: boundedError(error) }),
 		});
-		// pi's thinking levels ARE the shared reasoning-effort scale.
 		const thinkingLevel = (task.reasoningEffort ?? task.parent.inheritedThinkingLevel) as ThinkingLevel | undefined;
-
-		const state = {
+		const state: PiSessionState = {
 			closed: false,
-			/** prompt() rejection for the active run; folded into RunSettled. */
-			runError: undefined as string | undefined,
-			/** One terminal event per run: lifecycle, prompt-rejection, and abort
-			 * fallbacks can all race to settle; the first wins. */
+			runError: undefined,
 			settled: false,
+			questionCounter: 0,
 		};
 		const events = yield* Queue.make<SubagentEvent, Cause.Done>();
-		const emit = (event: SubagentEvent) => {
+		const emit: Emit = (event) => {
 			if (!state.closed) Queue.offerUnsafe(events, event);
 		};
-		const pendingAnswers = new Map<
-			string,
-			{ resolve: (answer: string) => void; reject: (error: Error) => void; removeAbortListener: () => void }
-		>();
-		let questionCounter = 0;
-
-		const askParentTool = defineTool({
-			name: "ask_parent",
-			label: "Ask Parent",
-			description:
-				"Ask the parent agent for missing context or a decision, then wait for its response. Use this instead of guessing when clarification would materially affect the work.",
-			promptSnippet: "Ask the parent agent a clarification question and wait for its answer",
-			promptGuidelines: [
-				"Use ask_parent when missing context or an ambiguous decision blocks reliable progress; continue independent work without asking when possible.",
-			],
-			parameters: Type.Object({
-				question: Type.String({ description: "The specific question the parent agent should answer" }),
-			}),
-			async execute(_toolCallId, params, signal) {
-				if (state.closed) throw new Error("The parent session is no longer available.");
-				const id = `q-${++questionCounter}`;
-				const answer = await new Promise<string>((resolve, reject) => {
-					const abort = () => {
-						if (!pendingAnswers.delete(id)) return;
-						emit({ _tag: "QuestionClosed", questionId: id });
-						reject(new Error("Parent question was cancelled."));
-					};
-					signal?.addEventListener("abort", abort, { once: true });
-					pendingAnswers.set(id, {
-						resolve,
-						reject,
-						removeAbortListener: () => signal?.removeEventListener("abort", abort),
-					});
-					if (signal?.aborted) {
-						abort();
-						return;
-					}
-					emit({
-						_tag: "QuestionAsked",
-						question: { id, text: params.question },
-					});
-				});
-				return {
-					content: [{ type: "text", text: `Parent response: ${answer}` }],
-					details: { question: params.question, answer },
-				};
-			},
+		const pendingAnswers = new Map<string, PendingAnswer>();
+		const askParentTool = createAskParentTool(state, emit, pendingAnswers);
+		const session = yield* createChildSession({
+			task,
+			model,
+			thinkingLevel,
+			askParentTool,
 		});
-
-		const session = yield* Effect.tryPromise({
-			try: async () => {
-				const { loader, settingsManager } = await createChildResources({
-					cwd: task.cwd,
-					projectTrusted: task.parent.projectTrusted,
-					excludedExtensionBasenames: ["google-style.ts"],
-				});
-				const { session } = await createAgentSession({
-					cwd: task.cwd,
-					sessionManager: SessionManager.create(task.cwd),
-					settingsManager,
-					resourceLoader: loader,
-					...(model === undefined ? {} : { model }),
-					...(thinkingLevel === undefined ? {} : { thinkingLevel }),
-					customTools: [askParentTool],
-					...childToolPolicy(),
-				});
-				// Start child extension session hooks/resources in headless mode.
-				// A rejection here would otherwise leak the freshly created session:
-				// the scope finalizer that owns cleanup is only registered later.
-				try {
-					await bindChildSessionExtensions(session);
-				} catch (error) {
-					await shutdownAndDisposeChildSession(session);
-					throw error;
-				}
-				return session;
-			},
-			catch: (error) => new SpawnError({ message: boundedError(error) }),
-		});
-
 		const toolTimeout = createToolCallTimeoutGuard();
 		toolTimeout.apply(session);
-
-		const activeModel = (): Model<any> | undefined => {
-			const sessionModel = session.model;
-			const last = lastAssistantMessage(session);
-			if (!last) return sessionModel;
-			if (sessionModel && (last.provider !== sessionModel.provider || last.model !== sessionModel.id)) {
-				// The session changed models after this assistant response.
-				return sessionModel;
-			}
-			return registry.find(last.provider, last.responseModel ?? last.model) ?? sessionModel;
-		};
-
-		const currentMeta = (): SubagentMeta => {
-			const m = activeModel();
-			return {
-				...(m ? { modelLabel: `${m.provider}/${m.id}` } : {}),
-				...(m?.contextWindow === undefined ? {} : { contextWindow: m.contextWindow }),
-				...(session.sessionFile === undefined ? {} : { sessionFilePath: session.sessionFile }),
-			};
-		};
-
-		const emitUsage = () => {
-			const usage = session.getContextUsage();
-			const tokens = usage?.tokens;
-			const contextWindow = activeModel()?.contextWindow ?? usage?.contextWindow;
-			emit({
-				_tag: "UsageChanged",
-				...(typeof tokens === "number" ? { tokens } : {}),
-				...(contextWindow === undefined ? {} : { contextWindow }),
-			});
-		};
-
-		const settle = () => {
-			if (state.settled) return;
-			state.settled = true;
-			const last = lastAssistantMessage(session);
-			const partialText = finalOutput(session) || undefined;
-			if (last?.stopReason === "aborted") {
-				emit({
-					_tag: "RunSettled",
-					outcome: { _tag: "Interrupted", ...(partialText === undefined ? {} : { partialText }) },
-				});
-				return;
-			}
-			const errorText =
-				state.runError ?? (last?.stopReason === "error" ? (last.errorMessage ?? "Run failed") : undefined);
-			if (errorText !== undefined) {
-				emit({
-					_tag: "RunSettled",
-					outcome: {
-						_tag: "Failed",
-						errorText: boundedError(errorText),
-						...(partialText === undefined ? {} : { partialText }),
-					},
-				});
-				return;
-			}
-			emit({
-				_tag: "RunSettled",
-				outcome: { _tag: "Completed", finalText: finalOutput(session) },
-			});
-		};
-
-		const handleEvent = (event: AgentSessionEvent) => {
-			if (state.closed) return;
-			switch (event.type) {
-				case "agent_start":
-					// Extensions may register tools between runs; guard new ones too.
-					toolTimeout.apply(session);
-					state.settled = false;
-					emit({ _tag: "RunStarted" });
-					break;
-				case "message_update": {
-					const streamEvent = event.assistantMessageEvent;
-					if (streamEvent.type === "text_delta") {
-						emit({
-							_tag: "AssistantDelta",
-							kind: "text",
-							delta: streamEvent.delta,
-						});
-					} else if (streamEvent.type === "thinking_delta") {
-						emit({
-							_tag: "AssistantDelta",
-							kind: "thinking",
-							delta: streamEvent.delta,
-						});
-					}
-					break;
-				}
-				case "message_end": {
-					const role = messageRole(event.message);
-					if (role === "user") {
-						const text = userText(event.message as Message);
-						if (text.trim()) emit({ _tag: "UserMessage", text });
-					} else if (role === "assistant") {
-						const cost = (event.message as AssistantMessage).usage?.cost?.total;
-						emit({
-							_tag: "AssistantMessage",
-							parts: assistantParts(event.message as AssistantMessage),
-							...(typeof cost === "number" && Number.isFinite(cost) ? { cost } : {}),
-						});
-						emitUsage();
-						emit({ _tag: "MetaChanged", meta: currentMeta() });
-					}
-					// toolResult messages are covered by tool_execution_end.
-					break;
-				}
-				case "tool_execution_start": {
-					const argsPreview = toolCallPreview(event.toolName, event.args);
-					emit({
-						_tag: "ToolStart",
-						toolId: event.toolCallId,
-						name: event.toolName,
-						...(argsPreview === undefined ? {} : { argsPreview }),
-					});
-					break;
-				}
-				case "tool_execution_update": {
-					const outputPreview = toolPreview(event.partialResult);
-					emit({
-						_tag: "ToolUpdate",
-						toolId: event.toolCallId,
-						...(outputPreview === undefined ? {} : { outputPreview }),
-					});
-					break;
-				}
-				case "tool_execution_end": {
-					const outputPreview = toolPreview(event.result);
-					emit({
-						_tag: "ToolEnd",
-						toolId: event.toolCallId,
-						name: event.toolName,
-						isError: event.isError,
-						...(outputPreview === undefined ? {} : { outputPreview }),
-					});
-					break;
-				}
-				case "queue_update":
-					emit({
-						_tag: "QueueChanged",
-						queued: [
-							...event.steering.map((text) => ({
-								text,
-								kind: "steer" as const,
-							})),
-							...event.followUp.map((text) => ({
-								text,
-								kind: "follow-up" as const,
-							})),
-						],
-					});
-					break;
-				case "agent_settled":
-					settle();
-					break;
-			}
-		};
-		const unsubscribe = session.subscribe(handleEvent);
-
-		yield* Effect.addFinalizer(() =>
-			Effect.promise(async () => {
-				state.closed = true;
-				for (const pending of pendingAnswers.values()) {
-					pending.removeAbortListener();
-					pending.reject(new Error("Subagent session closed before the parent answered."));
-				}
-				pendingAnswers.clear();
-				unsubscribe();
-				try {
-					session.clearQueue();
-				} catch {
-					// Continue with abort/dispose.
-				}
-				await waitForChildSessionOperation(session.abort(), 5_000);
-				await shutdownAndDisposeChildSession(session);
-				Queue.endUnsafe(events);
-			}),
-		);
-
-		/** Start a fresh run (v1 manager.run): fire-and-forget, errors -> events. */
-		const startRun = (text: string) => {
-			state.runError = undefined;
-			state.settled = false;
-			emit({ _tag: "RunStarted" });
-			void session.prompt(text).catch((error) => {
-				state.runError = boundedError(error);
-				// Preflight failures may never start the agent lifecycle, so no
-				// agent_settled will arrive for them.
-				if (!session.isStreaming) settle();
-			});
-		};
-
-		// Session naming is best-effort.
+		const control = createSessionControl({
+			session,
+			registry,
+			state,
+			emit,
+			toolTimeout,
+		});
+		const unsubscribe = session.subscribe((event) => control.handleEvent(event));
+		yield* Effect.addFinalizer(() => closePiSession({ session, state, pendingAnswers, unsubscribe, events }));
 		yield* Effect.try(() => session.sessionManager.appendSessionInfo(`subagent: ${task.title}`)).pipe(Effect.ignore);
-
-		emit({ _tag: "MetaChanged", meta: currentMeta() });
-		startRun(task.prompt);
-
+		emit({ _tag: "MetaChanged", meta: control.currentMeta() });
+		control.startRun(task.prompt);
 		return {
-			meta: Effect.sync(currentMeta),
+			meta: Effect.sync(() => control.currentMeta()),
 			events: Stream.fromQueue(events),
 			send: (text) =>
 				Effect.suspend((): Effect.Effect<void, SendError> => {
-					if (state.closed) {
-						return new SendError({ message: "Subagent session is closed." });
-					}
-					if (session.isStreaming) {
-						// Steer the active run via the SDK's queue; queue_update events
-						// render it, message_end(user) lands it in the transcript. A
-						// rejected steer is a real send failure, not a diagnostic.
+					if (state.closed) return new SendError({ message: "Subagent session is closed." });
+					if (session.isStreaming)
 						return Effect.tryPromise({
 							try: () => session.steer(text),
 							catch: (error) => new SendError({ message: boundedError(error) }),
 						}).pipe(Effect.asVoid);
-					}
-					return Effect.sync(() => startRun(text));
+					control.startRun(text);
+					return Effect.void;
 				}),
 			answer: (questionId, text) =>
 				Effect.suspend((): Effect.Effect<void, SendError> => {
 					const pending = pendingAnswers.get(questionId);
-					if (!pending || state.closed) {
-						return new SendError({ message: `Question "${questionId}" is no longer pending.` });
-					}
+					if (!pending || state.closed)
+						return new SendError({
+							message: `Question "${questionId}" is no longer pending.`,
+						});
 					pendingAnswers.delete(questionId);
 					pending.removeAbortListener();
 					emit({ _tag: "QuestionClosed", questionId });
 					pending.resolve(text);
 					return Effect.void;
 				}),
-			interrupt: Effect.promise(async () => {
-				if (state.closed) return;
-				try {
-					session.clearQueue();
-				} catch {
-					// Abort regardless.
-				}
-				await session.abort().catch(() => undefined);
-				// Only resolve once streaming has actually stopped: reporting the
-				// interrupt as complete while the run keeps working would let the
-				// manager settle a run that is still mutating the workspace. The
-				// manager bounds this effect at 5s and force-disposes on timeout.
-				while (!state.closed && session.isStreaming) {
-					await new Promise((resolve) => setTimeout(resolve, 50));
-				}
-				// No streaming run means no agent_settled will arrive; emit the
-				// terminal event (once) so the run cannot look running forever.
-				if (!state.closed && !state.settled) {
-					state.settled = true;
-					emit({ _tag: "RunSettled", outcome: { _tag: "Interrupted" } });
-				}
-			}),
+			interrupt: interruptPiSession(session, state, emit),
 		} satisfies SubagentSession;
 	});

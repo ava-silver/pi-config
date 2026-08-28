@@ -71,7 +71,15 @@ export class BackgroundHub {
 
 			const picked = await ctx.ui.custom<{ providerId: string; itemId: string } | null>(
 				(tui, theme, keybindings, done) =>
-					new BackgroundDashboard(this.providers, tui, theme, keybindings, done, selIdx, onSelChange),
+					new BackgroundDashboard({
+						providers: this.providers,
+						tui,
+						theme,
+						keybindings,
+						done,
+						initialSelIdx: selIdx,
+						onSelChange,
+					}),
 				{
 					overlay: true,
 					overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%" },
@@ -150,6 +158,16 @@ function statusWord(item: BackgroundItem, theme: Theme): string {
 
 // --- BackgroundDashboard component ------------------------------------------
 
+interface BackgroundDashboardOptions {
+	providers: ReadonlyMap<string, BackgroundProvider>;
+	tui: TUI;
+	theme: Theme;
+	keybindings: KeybindingsManager;
+	done: (value: { providerId: string; itemId: string } | null) => void;
+	initialSelIdx: number;
+	onSelChange: (idx: number) => void;
+}
+
 class BackgroundDashboard implements Component {
 	private providers: ReadonlyMap<string, BackgroundProvider>;
 	private tui: TUI;
@@ -163,22 +181,14 @@ class BackgroundDashboard implements Component {
 	private ticker: ReturnType<typeof setInterval>;
 	private unsubs: Array<() => void> = [];
 
-	constructor(
-		providers: ReadonlyMap<string, BackgroundProvider>,
-		tui: TUI,
-		theme: Theme,
-		keybindings: KeybindingsManager,
-		done: (value: { providerId: string; itemId: string } | null) => void,
-		initialSelIdx: number,
-		onSelChange: (idx: number) => void,
-	) {
-		this.providers = providers;
-		this.tui = tui;
-		this.theme = theme;
-		this.keybindings = keybindings;
-		this.done = done;
-		this.selIdx = initialSelIdx;
-		this.onSelChange = onSelChange;
+	constructor(options: BackgroundDashboardOptions) {
+		this.providers = options.providers;
+		this.tui = options.tui;
+		this.theme = options.theme;
+		this.keybindings = options.keybindings;
+		this.done = options.done;
+		this.selIdx = options.initialSelIdx;
+		this.onSelChange = options.onSelChange;
 		// Elapsed times and statuses tick along at 1 Hz.
 		this.ticker = setInterval(() => this.tui.requestRender(), 1000);
 		// Re-render whenever any provider reports a change.

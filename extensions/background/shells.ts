@@ -175,7 +175,10 @@ export function truncateTerminalText(content: string, notice?: string): { text: 
 		maxBytes: Math.max(0, DEFAULT_MAX_BYTES - Buffer.byteLength(suffix, "utf8")),
 		maxLines: notice ? DEFAULT_MAX_LINES - 1 : DEFAULT_MAX_LINES,
 	});
-	return { text: truncation.content + (truncation.truncated ? suffix : ""), truncated: truncation.truncated };
+	return {
+		text: truncation.content + (truncation.truncated ? suffix : ""),
+		truncated: truncation.truncated,
+	};
 }
 
 function artifactNotice(t: Terminal): string | undefined {
@@ -207,7 +210,12 @@ function terminalOutput(t: Terminal, maxBytes = DEFAULT_MAX_BYTES): { text: stri
 }
 
 export function settledTerminalIdsToPrune(
-	terminals: ReadonlyArray<{ id: string; status: TerminalStatus; startedAt: number; endedAt: number | undefined }>,
+	terminals: ReadonlyArray<{
+		id: string;
+		status: TerminalStatus;
+		startedAt: number;
+		endedAt: number | undefined;
+	}>,
 	maxTracked: number = MAX_TRACKED_TERMINALS,
 ): string[] {
 	return terminals
@@ -227,122 +235,176 @@ export async function removeTerminalArtifactDirectory(artifactDir: string | unde
 
 // --- Extension -------------------------------------------------------------
 
-export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
+interface ShellManager {
+	terminals: Map<string, Terminal>;
+	listeners: Set<() => void>;
+	start(ctx: ExtensionContext): void;
+	shutdown(): Promise<void>;
+	flushPending(): void;
+	refresh(): void;
+	spawn(opts: { command: string; title: string; cwd: string }, signal?: AbortSignal): Promise<Terminal>;
+	kill(terminal: Terminal, notify: boolean): boolean;
+}
+
+function createTerminal(
+	opts: { command: string; title: string; cwd: string },
+	artifact: {
+		dir: string | undefined;
+		path: string | undefined;
+		stream: fs.WriteStream | undefined;
+		status: Terminal["artifactStatus"];
+	},
+): Terminal {
+	let resolveSettled: () => void = () => undefined;
+	const settled = new Promise<void>((resolve) => {
+		resolveSettled = resolve;
+	});
+	return {
+		id: nextId(),
+		title: opts.title,
+		command: opts.command,
+		cwd: opts.cwd,
+		status: "running",
+		exitCode: undefined,
+		output: [],
+		outputBytes: 0,
+		pid: undefined,
+		startedAt: Date.now(),
+		endedAt: undefined,
+		proc: undefined,
+		artifactDir: artifact.dir,
+		artifactPath: artifact.path,
+		artifactStream: artifact.stream,
+		artifactFinalizing: undefined,
+		artifactBlocked: false,
+		settling: undefined,
+		settled,
+		resolveSettled,
+		killRequested: false,
+		killNotify: false,
+		artifactBytes: 0,
+		artifactStatus: artifact.status,
+		abortCleanup: undefined,
+	};
+}
+
+function createShellManager(pi: ExtensionAPI): ShellManager {
 	const terminals = new Map<string, Terminal>();
-	/** Terminals whose results should be delivered as follow-ups when idle. */
 	const pending = new Map<string, Terminal>();
+	const listeners = new Set<() => void>();
 	let sessionCtx: ExtensionContext | undefined;
-
-	// -- Status footer -------------------------------------------------------
-
 	const updateStatus = () => {
-		const visible = [...terminals.values()].filter((t) => !t.killRequested);
+		const visible = [...terminals.values()].filter((terminal) => !terminal.killRequested);
 		if (visible.length === 0) {
 			registerTransientSegment("terminals", null);
 			return;
 		}
-		const running = visible.filter((t) => t.status === "running").length;
-		const failed = visible.filter((t) => t.status === "error").length;
-		const done = visible.length - running - failed;
-		const parts: string[] = [];
-		if (running > 0) parts.push(`${running} running`);
-		if (done > 0) parts.push(`${done} done`);
-		if (failed > 0) parts.push(`${failed} failed`);
-		const bg = failed > 0 ? "#e78284" : running > 0 ? "#81c8be" : "#a6d189";
-		registerTransientSegment("terminals", { text: `$ ${parts.join(" · ")}`, bg, fg: "#1e2030" });
+		const running = visible.filter((terminal) => terminal.status === "running").length;
+		const failed = visible.filter((terminal) => terminal.status === "error").length;
+		const parts = [
+			running > 0 ? `${running} running` : undefined,
+			visible.length - running - failed > 0 ? `${visible.length - running - failed} done` : undefined,
+			failed > 0 ? `${failed} failed` : undefined,
+		].filter((part): part is string => part !== undefined);
+		registerTransientSegment("terminals", {
+			text: `$ ${parts.join(" · ")}`,
+			bg: failed > 0 ? "#e78284" : running > 0 ? "#81c8be" : "#a6d189",
+			fg: "#1e2030",
+		});
 	};
-
-	// -- Result delivery -----------------------------------------------------
-
-	const deliverResult = (t: Terminal) => {
-		const verb = t.status === "error" ? "failed" : "finished";
-		const exitInfo = t.exitCode !== undefined ? ` (exit ${t.exitCode})` : "";
-		const { text: body } = terminalOutput(t, FOLLOW_UP_BYTES);
+	const notifyListeners = () => {
+		for (const listener of listeners) listener();
+	};
+	const deliverResult = (terminal: Terminal) => {
+		const verb = terminal.status === "error" ? "failed" : "finished";
+		const exitInfo = terminal.exitCode !== undefined ? ` (exit ${terminal.exitCode})` : "";
+		const { text: body } = terminalOutput(terminal, FOLLOW_UP_BYTES);
 		pi.sendMessage(
 			{
 				customType: "terminal-result",
-				content: truncateTerminalText(`Background shell ${t.id} "${t.title}" ${verb}${exitInfo}\n\n${body}`).text,
+				content: truncateTerminalText(
+					`Background shell ${terminal.id} "${terminal.title}" ${verb}${exitInfo}\n\n${body}`,
+				).text,
 				display: true,
-				details: { id: t.id, title: t.title, status: t.status, exitCode: t.exitCode },
+				details: {
+					id: terminal.id,
+					title: terminal.title,
+					status: terminal.status,
+					exitCode: terminal.exitCode,
+				},
 			},
 			{ deliverAs: "followUp", triggerTurn: true },
 		);
 	};
-
 	const flushPending = () => {
-		for (const t of pending.values()) deliverResult(t);
+		for (const terminal of pending.values()) deliverResult(terminal);
 		pending.clear();
 	};
-
-	const listeners = new Set<() => void>();
-	const notifyListeners = () => {
-		for (const cb of listeners) cb();
-	};
-
-	const onSettled = (t: Terminal) => {
+	const onSettled = (terminal: Terminal) => {
 		updateStatus();
 		notifyListeners();
 		if (!sessionCtx) return;
-		pending.set(t.id, { ...t }); // snapshot
+		pending.set(terminal.id, { ...terminal });
 		if (sessionCtx.isIdle()) flushPending();
 	};
-
-	// -- Spawn ---------------------------------------------------------------
-
-	const closeArtifact = async (t: Terminal) => {
-		await finishArtifact(t);
-		t.abortCleanup?.();
-		t.abortCleanup = undefined;
+	const closeArtifact = async (terminal: Terminal) => {
+		await finishArtifact(terminal);
+		terminal.abortCleanup?.();
+		terminal.abortCleanup = undefined;
 	};
-
 	const settleTerminal = (
-		t: Terminal,
+		terminal: Terminal,
 		status: TerminalStatus,
 		exitCode: number | undefined,
 		deliver: boolean,
 		notify: boolean,
 	): Promise<void> => {
-		if (t.settling) return t.settling;
-		t.settling = (async () => {
-			await closeArtifact(t);
-			if (t.endedAt !== undefined) return;
-			t.exitCode = exitCode;
-			t.status = status;
-			t.endedAt = Date.now();
-			t.proc = undefined;
-			if (deliver) onSettled(t);
+		if (terminal.settling) return terminal.settling;
+		terminal.settling = (async () => {
+			await closeArtifact(terminal);
+			if (terminal.endedAt !== undefined) return;
+			terminal.exitCode = exitCode;
+			terminal.status = status;
+			terminal.endedAt = Date.now();
+			terminal.proc = undefined;
+			if (deliver) onSettled(terminal);
 			else if (notify) {
 				notifyListeners();
 				updateStatus();
 			}
-		})().finally(t.resolveSettled);
-		return t.settling;
+		})().finally(terminal.resolveSettled);
+		return terminal.settling;
 	};
-
-	const removeArtifact = async (t: Terminal) => {
-		if (t.killRequested) await t.settled;
-		else if (t.settling) await t.settling;
-		else await closeArtifact(t);
-		await removeTerminalArtifactDirectory(t.artifactDir);
+	const removeArtifact = async (terminal: Terminal) => {
+		if (terminal.killRequested) await terminal.settled;
+		else if (terminal.settling) await terminal.settling;
+		else await closeArtifact(terminal);
+		await removeTerminalArtifactDirectory(terminal.artifactDir);
 	};
-
 	const pruneTerminals = () => {
 		for (const id of settledTerminalIdsToPrune([...terminals.values()], MAX_TRACKED_TERMINALS - 1)) {
-			const t = terminals.get(id);
-			if (!t) continue;
-			// Once untracked, no tool result can disclose this artifact path.
+			const terminal = terminals.get(id);
+			if (!terminal) continue;
 			terminals.delete(id);
 			pending.delete(id);
-			void removeArtifact(t);
+			void removeArtifact(terminal);
 		}
 	};
-
-	const spawnTerminal = async (
+	const kill = (terminal: Terminal, notify: boolean) => {
+		if (terminal.status !== "running" || terminal.settling || terminal.killRequested) return false;
+		terminal.killRequested = true;
+		terminal.killNotify = notify;
+		pending.delete(terminal.id);
+		appendOutput(terminal, "\n[process killed]\n");
+		if (terminal.pid !== undefined) killProcessTree(terminal.pid);
+		return true;
+	};
+	const spawn = async (
 		opts: { command: string; title: string; cwd: string },
 		signal?: AbortSignal,
 	): Promise<Terminal> => {
 		pruneTerminals();
-		if ([...terminals.values()].filter((t) => t.status === "running").length >= MAX_RUNNING_TERMINALS)
+		if ([...terminals.values()].filter((terminal) => terminal.status === "running").length >= MAX_RUNNING_TERMINALS)
 			throw new Error(`Max ${MAX_RUNNING_TERMINALS} running terminals reached.`);
 		if (terminals.size >= MAX_TRACKED_TERMINALS)
 			throw new Error(`Max ${MAX_TRACKED_TERMINALS} tracked terminals reached.`);
@@ -354,9 +416,12 @@ export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
 			artifactDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-terminal-"));
 			await fs.promises.chmod(artifactDir, 0o700);
 			artifactPath = path.join(artifactDir, "output.log");
-			artifactStream = fs.createWriteStream(artifactPath, { flags: "w", mode: 0o600 });
+			artifactStream = fs.createWriteStream(artifactPath, {
+				flags: "w",
+				mode: 0o600,
+			});
 			await new Promise<void>((resolve, reject) => {
-				artifactStream?.once("open", () => resolve());
+				artifactStream?.once("open", resolve);
 				artifactStream?.once("error", reject);
 			});
 		} catch {
@@ -367,39 +432,14 @@ export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
 			artifactPath = undefined;
 			artifactStream = undefined;
 		}
-		let resolveSettled: () => void = () => undefined;
-		const settled = new Promise<void>((resolve) => {
-			resolveSettled = resolve;
+		const terminal = createTerminal(opts, {
+			dir: artifactDir,
+			path: artifactPath,
+			stream: artifactStream,
+			status: artifactStatus,
 		});
-		const t: Terminal = {
-			id: nextId(),
-			title: opts.title,
-			command: opts.command,
-			cwd: opts.cwd,
-			status: "running",
-			exitCode: undefined,
-			output: [],
-			outputBytes: 0,
-			pid: undefined,
-			startedAt: Date.now(),
-			endedAt: undefined,
-			proc: undefined,
-			artifactDir,
-			artifactPath,
-			artifactStream,
-			artifactFinalizing: undefined,
-			artifactBlocked: false,
-			settling: undefined,
-			settled,
-			resolveSettled,
-			killRequested: false,
-			killNotify: false,
-			artifactBytes: 0,
-			artifactStatus,
-			abortCleanup: undefined,
-		};
-		if (artifactStream) artifactStream.on("error", () => failArtifact(t));
-		terminals.set(t.id, t);
+		if (artifactStream) artifactStream.on("error", () => failArtifact(terminal));
+		terminals.set(terminal.id, terminal);
 		updateStatus();
 		const proc = child_process.spawn("bash", ["-c", opts.command], {
 			cwd: opts.cwd,
@@ -407,136 +447,146 @@ export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
 			env: process.env,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-
-		t.proc = proc;
-		t.pid = proc.pid;
-
-		proc.stdout.on("data", (chunk: Buffer) => appendOutput(t, chunk));
-		proc.stderr.on("data", (chunk: Buffer) => appendOutput(t, chunk));
-
+		terminal.proc = proc;
+		terminal.pid = proc.pid;
+		proc.stdout.on("data", (chunk: Buffer) => appendOutput(terminal, chunk));
+		proc.stderr.on("data", (chunk: Buffer) => appendOutput(terminal, chunk));
 		const settle = (code: number | null, error?: Error) => {
-			if (error) appendOutput(t, `\n[spawn error: ${error.message}]`);
-			const killed = t.killRequested;
+			if (error) appendOutput(terminal, `\n[spawn error: ${error.message}]`);
+			const killed = terminal.killRequested;
 			void settleTerminal(
-				t,
+				terminal,
 				killed || error || code !== 0 ? "error" : "done",
 				killed ? undefined : (code ?? undefined),
 				!killed,
-				killed && t.killNotify,
+				killed && terminal.killNotify,
 			);
 		};
 		proc.on("close", (code: number | null) => settle(code));
 		proc.on("error", (error: Error) => settle(null, error));
-
-		const abort = () => killTerminal(t, true);
+		const abort = () => kill(terminal, true);
 		if (signal?.aborted) abort();
 		else if (signal) {
 			signal.addEventListener("abort", abort, { once: true });
-			t.abortCleanup = () => signal.removeEventListener("abort", abort);
+			terminal.abortCleanup = () => signal.removeEventListener("abort", abort);
 		}
-		return t;
+		return terminal;
 	};
-
-	const killTerminal = (t: Terminal, notify: boolean): boolean => {
-		if (t.status !== "running" || t.settling || t.killRequested) return false;
-		t.killRequested = true;
-		t.killNotify = notify;
-		pending.delete(t.id);
-		appendOutput(t, "\n[process killed]\n");
-		if (t.pid !== undefined) killProcessTree(t.pid);
-		return true;
+	return {
+		terminals,
+		listeners,
+		refresh: () => {
+			updateStatus();
+			notifyListeners();
+		},
+		flushPending,
+		spawn,
+		kill,
+		start: (ctx) => {
+			sessionCtx = ctx;
+		},
+		async shutdown() {
+			sessionCtx = undefined;
+			pending.clear();
+			listeners.clear();
+			const tracked = [...terminals.values()];
+			for (const terminal of tracked) kill(terminal, false);
+			terminals.clear();
+			await Promise.all(tracked.map(removeArtifact));
+			registerTransientSegment("terminals", null);
+		},
 	};
+}
 
-	// -- Session lifecycle ---------------------------------------------------
-
+function registerShellLifecycle(pi: ExtensionAPI, background: BackgroundHub, shells: ShellManager) {
 	let unregisterProvider: (() => void) | undefined;
-
 	pi.on("session_start", (_event, ctx) => {
-		sessionCtx = ctx;
+		shells.start(ctx);
 		unregisterProvider?.();
 		unregisterProvider = background.registerProvider("terminals", {
 			label: "Background Shells",
-			list() {
-				return [...terminals.values()]
-					.filter((t) => t.status === "running")
-					.map((t) => ({
-						id: t.id,
-						title: t.title,
-						status: t.status,
-						elapsed: () => elapsed(t),
-						meta: () => {
-							const cmd = t.command.length > 48 ? t.command.slice(0, 45) + "…" : t.command;
-							return [cmd];
-						},
-					}));
-			},
+			list: () =>
+				[...shells.terminals.values()]
+					.filter((terminal) => terminal.status === "running")
+					.map((terminal) => ({
+						id: terminal.id,
+						title: terminal.title,
+						status: terminal.status,
+						elapsed: () => elapsed(terminal),
+						meta: () => [terminal.command.length > 48 ? terminal.command.slice(0, 45) + "…" : terminal.command],
+					})),
 			subscribe(cb) {
-				listeners.add(cb);
-				return () => listeners.delete(cb);
+				shells.listeners.add(cb);
+				return () => shells.listeners.delete(cb);
 			},
-			async openDetail(id, ctx) {
-				const t = terminals.get(id);
-				if (!t) return;
-				await ctx.ui.custom<null>(
+			async openDetail(id, viewContext) {
+				if (!shells.terminals.has(id)) return;
+				await viewContext.ui.custom<null>(
 					(tui, theme, keybindings, done) =>
-						new TerminalOutputView(
+						new TerminalOutputView({
 							tui,
 							theme,
 							keybindings,
 							id,
-							() => terminals.get(id),
-							() => {
-								const terminal = terminals.get(id);
-								if (terminal) killTerminal(terminal, true);
+							getTerminal: () => shells.terminals.get(id),
+							killTerminal: () => {
+								const terminal = shells.terminals.get(id);
+								if (terminal) shells.kill(terminal, true);
 							},
-							listeners,
+							listeners: shells.listeners,
 							done,
-						),
-					{ overlay: true, overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%" } },
+						}),
+					{
+						overlay: true,
+						overlayOptions: {
+							anchor: "center",
+							width: "100%",
+							maxHeight: "100%",
+						},
+					},
 				);
 			},
 			kill(id) {
-				const t = terminals.get(id);
-				if (t) killTerminal(t, true);
+				const terminal = shells.terminals.get(id);
+				if (terminal) shells.kill(terminal, true);
 			},
 		});
 	});
-
-	pi.on("agent_settled", flushPending);
-
+	pi.on("agent_settled", () => shells.flushPending());
 	pi.on("session_shutdown", async () => {
-		sessionCtx = undefined;
-		pending.clear();
 		unregisterProvider?.();
 		unregisterProvider = undefined;
-		listeners.clear();
-		const tracked = [...terminals.values()];
-		for (const t of tracked) killTerminal(t, false);
-		terminals.clear();
-		await Promise.all(tracked.map(removeArtifact));
-		registerTransientSegment("terminals", null);
+		await shells.shutdown();
 	});
+}
 
-	// -- Tools ---------------------------------------------------------------
-
+function registerShellTools(pi: ExtensionAPI, shells: ShellManager) {
 	pi.registerTool({
 		name: "background_shell_run",
 		label: "Run Background Shell",
 		description:
-			"Run a shell command expected to keep running, such as a dev server. Use the bash tool for commands that finish on their own. " +
-			"Returns immediately with a background shell ID. Use background_shell_check to peek at live output.",
+			"Run a shell command expected to keep running, such as a dev server. Use the bash tool for commands that finish on their own. Returns immediately with a background shell ID. Use background_shell_check to peek at live output.",
 		parameters: Type.Object({
 			command: Type.String({ description: "Shell command to execute" }),
-			title: Type.String({ description: "Short human-readable label for this terminal, shown in listings" }),
-			working_dir: Type.Optional(Type.String({ description: "Working directory (default: current directory)" })),
+			title: Type.String({
+				description: "Short human-readable label for this terminal, shown in listings",
+			}),
+			working_dir: Type.Optional(
+				Type.String({
+					description: "Working directory (default: current directory)",
+				}),
+			),
 		}),
 		renderCall(args, theme) {
-			const lines = [
-				theme.fg("toolTitle", "background_shell_run") + (args.title ? " " + theme.fg("dim", args.title) : ""),
-				...(args.command ? [theme.fg("text", `$ ${args.command}`)] : []),
-				...(args.working_dir ? [theme.fg("muted", `cwd: ${args.working_dir}`)] : []),
-			];
-			return new Text(lines.join("\n"), 0, 0);
+			return new Text(
+				[
+					theme.fg("toolTitle", "background_shell_run") + (args.title ? " " + theme.fg("dim", args.title) : ""),
+					...(args.command ? [theme.fg("text", `$ ${args.command}`)] : []),
+					...(args.working_dir ? [theme.fg("muted", `cwd: ${args.working_dir}`)] : []),
+				].join("\n"),
+				0,
+				0,
+			);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const cwd = path.resolve(ctx.cwd, params.working_dir ?? ".");
@@ -547,21 +597,26 @@ export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
 			}
 			const title = params.title.trim().slice(0, 160) || "terminal";
 			if (signal?.aborted) throw new Error("Terminal run aborted.");
-			const t = await spawnTerminal({ command: params.command, title, cwd }, signal);
+			const terminal = await shells.spawn({ command: params.command, title, cwd }, signal);
 			return {
 				content: [
 					{
 						type: "text",
 						text: truncateTerminalText(
-							`Started background shell ${t.id} "${t.title}" (pid ${t.pid ?? "?"}) in ${cwd}${artifactNotice(t) ? `\n${artifactNotice(t)}` : ""}`,
+							`Started background shell ${terminal.id} "${terminal.title}" (pid ${terminal.pid ?? "?"}) in ${cwd}${artifactNotice(terminal) ? `\n${artifactNotice(terminal)}` : ""}`,
 						).text,
 					},
 				],
-				details: { id: t.id, title: t.title, pid: t.pid, cwd, artifactStatus: t.artifactStatus },
+				details: {
+					id: terminal.id,
+					title: terminal.title,
+					pid: terminal.pid,
+					cwd,
+					artifactStatus: terminal.artifactStatus,
+				},
 			};
 		},
 	});
-
 	pi.registerTool({
 		name: "background_shell_cancel",
 		label: "Cancel Background Shells",
@@ -575,33 +630,31 @@ export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
 		async execute(_id, params) {
 			const ids = [...new Set(params.ids)];
 			if (ids.length === 0) throw new Error("Provide at least one terminal id.");
-			const unknown = ids.filter((id) => !terminals.has(id));
-			if (unknown.length > 0) {
-				const known = [...terminals.keys()];
-				throw new Error(`Unknown background shell id(s): ${unknown.join(", ")}. Known: ${known.join(", ") || "none"}.`);
-			}
+			const unknown = ids.filter((id) => !shells.terminals.has(id));
+			if (unknown.length > 0)
+				throw new Error(
+					`Unknown background shell id(s): ${unknown.join(", ")}. Known: ${[...shells.terminals.keys()].join(", ") || "none"}.`,
+				);
 			const lines: string[] = [];
 			const killed: Terminal[] = [];
 			for (const id of ids) {
-				const t = terminals.get(id);
-				if (!t) continue;
-				if (killTerminal(t, false)) {
-					killed.push(t);
-					lines.push(`Killed ${id} "${t.title}".${artifactNotice(t) ? ` ${artifactNotice(t)}` : ""}`);
-				} else {
-					lines.push(`${id} "${t.title}" was already ${t.status}.`);
-				}
+				const terminal = shells.terminals.get(id);
+				if (!terminal) continue;
+				if (shells.kill(terminal, false)) {
+					killed.push(terminal);
+					lines.push(
+						`Killed ${id} "${terminal.title}".${artifactNotice(terminal) ? ` ${artifactNotice(terminal)}` : ""}`,
+					);
+				} else lines.push(`${id} "${terminal.title}" was already ${terminal.status}.`);
 			}
 			await Promise.all(killed.map((terminal) => terminal.settled));
-			updateStatus();
-			notifyListeners();
+			shells.refresh();
 			return {
 				content: [{ type: "text", text: truncateTerminalText(lines.join("\n")).text }],
 				details: { ids },
 			};
 		},
 	});
-
 	pi.registerTool({
 		name: "background_shell_check",
 		label: "Check Background Shell",
@@ -610,14 +663,14 @@ export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
 			id: Type.String({ description: "Terminal ID to check" }),
 		}),
 		async execute(_callId, params) {
-			const t = terminals.get(params.id);
-			if (!t) {
-				const known = [...terminals.keys()];
-				throw new Error(`Unknown background shell id "${params.id}". Known: ${known.join(", ") || "none"}.`);
-			}
-			let text = `${describe(t)}\nCommand: ${t.command}`;
-			if (t.exitCode !== undefined) text += `\nExit code: ${t.exitCode}`;
-			const { text: preview } = terminalOutput(t, CHECK_PREVIEW_BYTES);
+			const terminal = shells.terminals.get(params.id);
+			if (!terminal)
+				throw new Error(
+					`Unknown background shell id "${params.id}". Known: ${[...shells.terminals.keys()].join(", ") || "none"}.`,
+				);
+			let text = `${describe(terminal)}\nCommand: ${terminal.command}`;
+			if (terminal.exitCode !== undefined) text += `\nExit code: ${terminal.exitCode}`;
+			const { text: preview } = terminalOutput(terminal, CHECK_PREVIEW_BYTES);
 			text += preview ? `\n\nRecent output:\n${preview}` : "\n\n(no output yet)";
 			return {
 				content: [
@@ -626,29 +679,46 @@ export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
 						text: truncateTerminalText(text, "[Response truncated. See artifact status above.]").text,
 					},
 				],
-				details: { id: t.id, status: t.status, exitCode: t.exitCode, artifactStatus: t.artifactStatus },
+				details: {
+					id: terminal.id,
+					status: terminal.status,
+					exitCode: terminal.exitCode,
+					artifactStatus: terminal.artifactStatus,
+				},
 			};
 		},
 	});
-
 	pi.registerTool({
 		name: "background_shell_list",
 		label: "List Background Shells",
 		description: "List all background shells and their current status.",
 		parameters: Type.Object({}),
 		async execute() {
-			const all = [...terminals.values()];
-			const text = all.length === 0 ? "No background shells." : all.map(describe).join("\n");
+			const all = [...shells.terminals.values()];
 			return {
-				content: [{ type: "text", text: truncateTerminalText(text).text }],
+				content: [
+					{
+						type: "text",
+						text: truncateTerminalText(all.length === 0 ? "No background shells." : all.map(describe).join("\n")).text,
+					},
+				],
 				details: {
-					terminals: all.map((t) => ({ id: t.id, title: t.title, status: t.status, artifactStatus: t.artifactStatus })),
+					terminals: all.map((terminal) => ({
+						id: terminal.id,
+						title: terminal.title,
+						status: terminal.status,
+						artifactStatus: terminal.artifactStatus,
+					})),
 				},
 			};
 		},
 	});
+}
 
-	// -- Detail view ---------------------------------------------------------
+export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
+	const shells = createShellManager(pi);
+	registerShellLifecycle(pi, background, shells);
+	registerShellTools(pi, shells);
 }
 
 // --- TerminalOutputView -----------------------------------------------------
@@ -663,6 +733,17 @@ function sanitize(text: string): string {
 		.replace(ANSI_RE, "")
 		.replaceAll("\t", "  ")
 		.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+}
+
+interface TerminalOutputViewOptions {
+	tui: TUI;
+	theme: Theme;
+	keybindings: KeybindingsManager;
+	id: string;
+	getTerminal: () => Terminal | undefined;
+	killTerminal: () => void;
+	listeners: Set<() => void>;
+	done: (value: null) => void;
 }
 
 class TerminalOutputView implements Component, Focusable {
@@ -688,26 +769,17 @@ class TerminalOutputView implements Component, Focusable {
 		this._focused = v;
 	}
 
-	constructor(
-		tui: TUI,
-		theme: Theme,
-		keybindings: KeybindingsManager,
-		id: string,
-		getTerminal: () => Terminal | undefined,
-		killTerminal: () => void,
-		listeners: Set<() => void>,
-		done: (value: null) => void,
-	) {
-		this.tui = tui;
-		this.theme = theme;
-		this.keybindings = keybindings;
-		this.id = id;
-		this.getTerminal = getTerminal;
-		this.killTerminal = killTerminal;
-		this.done = done;
+	constructor(options: TerminalOutputViewOptions) {
+		this.tui = options.tui;
+		this.theme = options.theme;
+		this.keybindings = options.keybindings;
+		this.id = options.id;
+		this.getTerminal = options.getTerminal;
+		this.killTerminal = options.killTerminal;
+		this.done = options.done;
 		const scheduleRender = () => this.scheduleRender();
-		listeners.add(scheduleRender);
-		this.unsubscribe = () => listeners.delete(scheduleRender);
+		options.listeners.add(scheduleRender);
+		this.unsubscribe = () => options.listeners.delete(scheduleRender);
 		// Poll at 200 ms so live output stays fresh.
 		this.ticker = setInterval(() => this.tui.requestRender(), 200);
 	}
