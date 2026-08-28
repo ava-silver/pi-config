@@ -39,6 +39,11 @@ export default function (pi: ExtensionAPI): void {
 					if (request.handled) return;
 				}
 
+				if (matchesKey(data, "alt+s") || data === "ß") {
+					pi.events.emit("prompt-snippets:open", { ctx });
+					return;
+				}
+
 				if (matchesKey(data, "alt+c") || data === "ç") {
 					const prompt = ctx.ui.getEditorText();
 					if (!prompt.trim()) return;
