@@ -10,6 +10,7 @@
 - In general, opt for existing tools (formatters, linters, etc) for fixing problems where possible instead of manual edits
 - Before implementing new logic, search for an existing helper or implementation and reuse it when appropriate.
 - Validate the behavior the user requested, not just adjacent checks. For integration changes, validate at least one representative consumer.
+- Never add change-detector tests. Only add behavior tests, and when there's no interesting business logic to test, no unit tests is fine.
 - After implementation, reread the complete diff and remove speculative abstractions, checks, and indirection.
 - Avoid meta commentary when writing docs, comments, or PR descriptions. Don't make arguments against previous iterations that used to exist -- keep text artifacts grounded in the present.
 - For all git operations, load the `git-workflow` skill for full context on branching, committing, and pushing conventions.
