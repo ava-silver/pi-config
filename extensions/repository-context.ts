@@ -28,7 +28,7 @@ export interface RepositoryContext extends RepositoryMetadata {
 
 export type RepositoryCache = Record<string, RepositoryMetadata>;
 
-interface ParsedRemote {
+export interface ParsedRemote {
 	key: string;
 	name: string;
 	context: RepositoryContext;
@@ -123,8 +123,8 @@ export function parseRepositoryRemote(remote: string): Omit<ParsedRemote, "name"
 	};
 }
 
-export function selectGitHubRemote(config: string): ParsedRemote | undefined {
-	const remotes = config
+export function parseGitHubRemotes(config: string): ParsedRemote[] {
+	return config
 		.split("\n")
 		.map((line) => line.trim().match(/^remote\.([^.]*)\.url\s+(.+)$/))
 		.flatMap((match) => {
@@ -132,12 +132,10 @@ export function selectGitHubRemote(config: string): ParsedRemote | undefined {
 			const parsed = parseRepositoryRemote(match[2]);
 			return parsed ? [{ ...parsed, name: match[1] }] : [];
 		});
+}
 
-	return (
-		remotes.find((remote) => remote.context.organization.toLowerCase() === "datadog") ??
-		remotes.find((remote) => remote.name === "origin") ??
-		remotes[0]
-	);
+export function selectGitHubRemote(remotes: ParsedRemote[]): ParsedRemote | undefined {
+	return remotes.find((remote) => remote.name === "origin") ?? remotes[0];
 }
 
 export function detectCi(root: string): CiProvider[] {
@@ -167,9 +165,23 @@ async function commandOutput(pi: ExtensionAPI, command: string, args: string[]):
 	}
 }
 
-async function loadGitHubVisibility(pi: ExtensionAPI, url: string): Promise<RepositoryVisibility> {
+function githubAuthHost(organization: string): string {
+	return ["ddoghq", "ddoghq-sandbox", "ava-silver_ddog"].includes(organization.toLowerCase())
+		? "ddoghq.github.com"
+		: "github.com";
+}
+
+async function loadGitHubVisibility(pi: ExtensionAPI, context: RepositoryContext): Promise<RepositoryVisibility> {
 	if (offline()) return "unknown";
-	const output = await commandOutput(pi, "gh", ["repo", "view", url, "--json", "visibility"]);
+	const output = await commandOutput(pi, "env", [
+		`GH_HOST=${githubAuthHost(context.organization)}`,
+		"gh",
+		"repo",
+		"view",
+		context.url,
+		"--json",
+		"visibility",
+	]);
 	if (!output) return "unknown";
 
 	try {
@@ -217,7 +229,7 @@ async function discoverRepository(
 ): Promise<{ key: string; context: RepositoryContext }> {
 	const context = {
 		...remote.context,
-		visibility: await loadGitHubVisibility(pi, remote.context.url),
+		visibility: await loadGitHubVisibility(pi, remote.context),
 	};
 	const providers = detectCi(root);
 	const ci = await Promise.all(
@@ -245,9 +257,14 @@ export function buildRepositoryPrompt(context: RepositoryContext): string {
 			: `- CI:\n${context.ci
 					.map((location) => `  - ${ciLabel(location.provider)}: ${location.project} (${location.url})`)
 					.join("\n")}`;
+	const authHost = githubAuthHost(context.organization);
+	const authGuidance =
+		authHost === "github.com"
+			? `Use \`gh\` with the GitHub authentication for ${context.organization}.`
+			: `Use \`gh\` with the ${context.organization} authentication by setting \`GH_HOST=${authHost}\`.`;
 	const gitLabProject = context.ci.find((location) => location.provider === "gitlab")?.project;
 	const gitLabGuidance = gitLabProject
-		? ` For GitLab CI commands, pass \`--repo ${gitLabProject}\` because the Git remote points to GitHub, while Gitlab Mirrors the Repo.`
+		? ` For GitLab CI commands, pass \`--repo ${gitLabProject}\` because GitLab is only the CI mirror and the Git remote points to GitHub.`
 		: "";
 	return `## Repository context
 
@@ -256,7 +273,7 @@ export function buildRepositoryPrompt(context: RepositoryContext): string {
 - Visibility: ${context.visibility}
 ${ci}
 
-Use GitHub for code and pull request operations.${gitLabGuidance}`;
+Use GitHub for code and pull request operations. ${authGuidance}${gitLabGuidance}`;
 }
 
 export default function repositoryContextExtension(pi: ExtensionAPI): void {
@@ -273,7 +290,7 @@ export default function repositoryContextExtension(pi: ExtensionAPI): void {
 			commandOutput(pi, "git", ["-C", ctx.cwd, "rev-parse", "--show-toplevel"]),
 			commandOutput(pi, "git", ["-C", ctx.cwd, "config", "--get-regexp", "^remote\\..*\\.url$"]),
 		]);
-		const remote = remoteConfig ? selectGitHubRemote(remoteConfig) : undefined;
+		const remote = remoteConfig ? selectGitHubRemote(parseGitHubRemotes(remoteConfig)) : undefined;
 		if (!root || !remote) return;
 		cacheKey = remote.key;
 

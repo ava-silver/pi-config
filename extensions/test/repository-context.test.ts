@@ -6,6 +6,7 @@ import test from "node:test";
 import {
 	buildRepositoryPrompt,
 	detectCi,
+	parseGitHubRemotes,
 	parseRepositoryRemote,
 	readRepositoryCache,
 	selectGitHubRemote,
@@ -41,11 +42,12 @@ test("parses HTTPS and SSH GitHub remotes", () => {
 	assert.equal(parseRepositoryRemote("git@gitlab.ddbuild.io:DataDog/example.git"), undefined);
 });
 
-test("prefers the public DataDog remote over the private GitHub mirror", () => {
-	const remote = selectGitHubRemote(`remote.origin.url git@github.com:ddoghq/serverless-ci.git
-remote.datadog.url https://github.com/DataDog/serverless-ci.git`);
-	assert.equal(remote?.name, "datadog");
-	assert.equal(remote?.context.url, "https://github.com/DataDog/serverless-ci");
+test("uses origin instead of another GitHub remote", () => {
+	const remotes = parseGitHubRemotes(`remote.datadog.url https://github.com/DataDog/dd-source.git
+remote.origin.url git@github.com:ddoghq/dd-source.git`);
+	const remote = selectGitHubRemote(remotes);
+	assert.equal(remote?.name, "origin");
+	assert.equal(remote?.context.url, "https://github.com/ddoghq/dd-source");
 });
 
 test("writes and reads editable repository metadata", () => {
@@ -91,5 +93,6 @@ test("builds GitHub repository and GitLab mirror guidance", () => {
 	assert.match(prompt, /Visibility: public/);
 	assert.match(prompt, /GitHub Actions: DataDog\/example/);
 	assert.match(prompt, /GitLab CI: DataDog\/example/);
+	assert.match(prompt, /authentication for DataDog/);
 	assert.match(prompt, /--repo DataDog\/example/);
 });
