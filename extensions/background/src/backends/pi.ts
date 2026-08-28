@@ -13,9 +13,10 @@
 
 import type { AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, defineTool, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Cause, Scope } from "effect";
 import { Effect, Queue, Stream } from "effect";
+import { Type } from "typebox";
 import type { SpawnTask, SubagentEvent, SubagentMeta, SubagentSession, TranscriptPart } from "../domain.ts";
 import { SendError, SpawnError } from "../domain.ts";
 import {
@@ -90,6 +91,7 @@ const TOOL_SUMMARY_KEY: Record<string, string | null> = {
 	subagent_list: null,
 	workflow: null,
 	ask_user: "question",
+	ask_parent: "question",
 };
 
 /**
@@ -205,6 +207,67 @@ export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, 
 		// pi's thinking levels ARE the shared reasoning-effort scale.
 		const thinkingLevel = (task.reasoningEffort ?? task.parent.inheritedThinkingLevel) as ThinkingLevel | undefined;
 
+		const state = {
+			closed: false,
+			/** prompt() rejection for the active run; folded into RunSettled. */
+			runError: undefined as string | undefined,
+			/** One terminal event per run: lifecycle, prompt-rejection, and abort
+			 * fallbacks can all race to settle; the first wins. */
+			settled: false,
+		};
+		const events = yield* Queue.make<SubagentEvent, Cause.Done>();
+		const emit = (event: SubagentEvent) => {
+			if (!state.closed) Queue.offerUnsafe(events, event);
+		};
+		const pendingAnswers = new Map<
+			string,
+			{ resolve: (answer: string) => void; reject: (error: Error) => void; removeAbortListener: () => void }
+		>();
+		let questionCounter = 0;
+
+		const askParentTool = defineTool({
+			name: "ask_parent",
+			label: "Ask Parent",
+			description:
+				"Ask the parent agent for missing context or a decision, then wait for its response. Use this instead of guessing when clarification would materially affect the work.",
+			promptSnippet: "Ask the parent agent a clarification question and wait for its answer",
+			promptGuidelines: [
+				"Use ask_parent when missing context or an ambiguous decision blocks reliable progress; continue independent work without asking when possible.",
+			],
+			parameters: Type.Object({
+				question: Type.String({ description: "The specific question the parent agent should answer" }),
+			}),
+			async execute(_toolCallId, params, signal) {
+				if (state.closed) throw new Error("The parent session is no longer available.");
+				const id = `q-${++questionCounter}`;
+				const answer = await new Promise<string>((resolve, reject) => {
+					const abort = () => {
+						if (!pendingAnswers.delete(id)) return;
+						emit({ _tag: "QuestionClosed", questionId: id });
+						reject(new Error("Parent question was cancelled."));
+					};
+					signal?.addEventListener("abort", abort, { once: true });
+					pendingAnswers.set(id, {
+						resolve,
+						reject,
+						removeAbortListener: () => signal?.removeEventListener("abort", abort),
+					});
+					if (signal?.aborted) {
+						abort();
+						return;
+					}
+					emit({
+						_tag: "QuestionAsked",
+						question: { id, text: params.question },
+					});
+				});
+				return {
+					content: [{ type: "text", text: `Parent response: ${answer}` }],
+					details: { question: params.question, answer },
+				};
+			},
+		});
+
 		const session = yield* Effect.tryPromise({
 			try: async () => {
 				const { loader, settingsManager } = await createChildResources({
@@ -219,6 +282,7 @@ export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, 
 					resourceLoader: loader,
 					...(model === undefined ? {} : { model }),
 					...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+					customTools: [askParentTool],
 					...childToolPolicy(),
 				});
 				// Start child extension session hooks/resources in headless mode.
@@ -234,20 +298,6 @@ export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, 
 			},
 			catch: (error) => new SpawnError({ message: boundedError(error) }),
 		});
-
-		const state = {
-			closed: false,
-			/** prompt() rejection for the active run; folded into RunSettled. */
-			runError: undefined as string | undefined,
-			/** One terminal event per run: lifecycle, prompt-rejection, and abort
-			 * fallbacks can all race to settle; the first wins. */
-			settled: false,
-		};
-
-		const events = yield* Queue.make<SubagentEvent, Cause.Done>();
-		const emit = (event: SubagentEvent) => {
-			Queue.offerUnsafe(events, event);
-		};
 
 		const toolTimeout = createToolCallTimeoutGuard();
 		toolTimeout.apply(session);
@@ -413,6 +463,11 @@ export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, 
 		yield* Effect.addFinalizer(() =>
 			Effect.promise(async () => {
 				state.closed = true;
+				for (const pending of pendingAnswers.values()) {
+					pending.removeAbortListener();
+					pending.reject(new Error("Subagent session closed before the parent answered."));
+				}
+				pendingAnswers.clear();
 				unsubscribe();
 				try {
 					session.clearQueue();
@@ -462,6 +517,18 @@ export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, 
 						}).pipe(Effect.asVoid);
 					}
 					return Effect.sync(() => startRun(text));
+				}),
+			answer: (questionId, text) =>
+				Effect.suspend((): Effect.Effect<void, SendError> => {
+					const pending = pendingAnswers.get(questionId);
+					if (!pending || state.closed) {
+						return new SendError({ message: `Question "${questionId}" is no longer pending.` });
+					}
+					pendingAnswers.delete(questionId);
+					pending.removeAbortListener();
+					emit({ _tag: "QuestionClosed", questionId });
+					pending.resolve(text);
+					return Effect.void;
 				}),
 			interrupt: Effect.promise(async () => {
 				if (state.closed) return;

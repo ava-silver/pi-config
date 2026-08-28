@@ -5,7 +5,8 @@
  * Tools (for the parent LLM):
  * - subagent_spawn: fire-and-forget spawn (prompt, name, working_dir,
  *   model, reasoning_effort). Max 16 running at once.
- * - subagent_wait: block until the listed subagents settle, return results.
+ * - subagent_wait: block until the listed subagents settle or ask a question.
+ * - subagent_answer: answer a subagent's pending question.
  * - subagent_cancel: stop one or more running subagents.
  * - subagent_check: peek at a subagent's status and recent activity.
  * - subagent_list: list all subagents.
@@ -33,8 +34,11 @@ import { registerBackgroundCost, registerTransientSegment } from "../shared/foot
 import { resolveStandaloneChildProjectTrust } from "../shared/child-session.ts";
 import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
+	buildSubagentQuestionMessage,
 	buildSubagentResultMessage,
 	buildSubagentSpawnResult,
+	SUBAGENT_ANSWER_PARAMETER_DESCRIPTIONS,
+	SUBAGENT_ANSWER_TOOL_DESCRIPTION,
 	SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS,
 	SUBAGENT_CANCEL_TOOL_DESCRIPTION,
 	SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS,
@@ -63,7 +67,8 @@ function describeSubagent(snap: SubagentSnapshot) {
 		formatElapsed(snap),
 		snap.cwd,
 	].filter(Boolean);
-	return `${snap.id} [${snap.status}] "${snap.title}" (${details.join(", ")})`;
+	const status = snap.pendingQuestions.length > 0 ? "waiting for answer" : snap.status;
+	return `${snap.id} [${status}] "${snap.title}" (${details.join(", ")})`;
 }
 
 function truncatedOutput(snap: SubagentSnapshot, maxBytes = SUBAGENT_OUTPUT_MAX_BYTES): string {
@@ -97,6 +102,7 @@ export function setupSubagents(pi: ExtensionAPI, background: BackgroundHub) {
 			.runPromise(SubagentManager)
 			.then((manager) => {
 				manager.view.setOnSettled(onSettled);
+				manager.view.setOnQuestion(deliverQuestion);
 				managerView = manager.view;
 				unsubStatus?.();
 				unsubStatus = manager.view.subscribe(() => updateStatus(manager));
@@ -150,6 +156,22 @@ export function setupSubagents(pi: ExtensionAPI, background: BackgroundHub) {
 	const flushResults = () => {
 		for (const snap of resultDelivery.drain()) deliverResult(snap);
 	};
+
+	function deliverQuestion(snap: SubagentSnapshot, question: SubagentSnapshot["pendingQuestions"][number]) {
+		pi.sendMessage(
+			{
+				customType: "subagent-question",
+				content: buildSubagentQuestionMessage({
+					id: snap.id,
+					title: snap.title,
+					question: question.text,
+				}),
+				display: true,
+				details: { id: snap.id, title: snap.title, questionId: question.id },
+			},
+			{ deliverAs: "steer", triggerTurn: true },
+		);
+	}
 
 	const onSettled = (snap: SubagentSnapshot, consumed: boolean) => {
 		if (consumed) {
@@ -362,12 +384,21 @@ export function setupSubagents(pi: ExtensionAPI, background: BackgroundHub) {
 					sections.push(`## ${id}\n\n(no longer tracked)`);
 					continue;
 				}
-				const verb = snap.status === "error" ? "failed" : "finished";
+				const question = snap.pendingQuestions[0];
+				const verb = question
+					? "is waiting for an answer"
+					: snap.status === "error"
+						? "failed"
+						: snap.status === "running"
+							? "is still running"
+							: "finished";
 				let section = `## ${snap.id} "${snap.title}" ${verb}`;
 				if (snap.errorText) section += `\nError: ${snap.errorText}`;
 				const headerBytes = Buffer.byteLength(section, "utf8") + 2;
 				const outputBudget = Math.max(512, Math.min(WAIT_PER_AGENT_MAX_BYTES, remainingBytes - headerBytes));
-				section += `\n\n${truncatedOutput(snap, outputBudget)}`;
+				section += question
+					? `\n\nQuestion: ${question.text}\n\nAnswer with subagent_answer({ id: "${snap.id}", answer: "..." }).`
+					: `\n\n${truncatedOutput(snap, outputBudget)}`;
 				const sectionBytes = Buffer.byteLength(section, "utf8");
 				if (sectionBytes > remainingBytes) {
 					sections.push(`## ${snap.id} "${snap.title}"\n\n[omitted: total wait output limit reached]`);
@@ -393,6 +424,30 @@ export function setupSubagents(pi: ExtensionAPI, background: BackgroundHub) {
 						return { id, title: snap?.title, status: snap?.status };
 					}),
 				},
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_answer",
+		label: "Answer Subagent",
+		description: SUBAGENT_ANSWER_TOOL_DESCRIPTION,
+		parameters: Type.Object({
+			id: Type.String({ description: SUBAGENT_ANSWER_PARAMETER_DESCRIPTIONS.id }),
+			answer: Type.String({ description: SUBAGENT_ANSWER_PARAMETER_DESCRIPTIONS.answer }),
+		}),
+		renderCall(args, theme) {
+			const header = theme.fg("toolTitle", "subagent_answer") + (args.id ? " " + theme.fg("dim", String(args.id)) : "");
+			return new Text([header, ...(args.answer ? [theme.fg("text", args.answer)] : [])].join("\n"), 0, 0);
+		},
+		async execute(_toolCallId, params) {
+			const manager = await getManager();
+			const answer = params.answer.trim();
+			if (!answer) throw new Error("Provide a non-empty answer.");
+			const question = await runTool(getRuntime(), manager.answer(params.id, answer));
+			return {
+				content: [{ type: "text", text: `Answered ${params.id}: ${question.text}` }],
+				details: { id: params.id, questionId: question.id, question: question.text, answer },
 			};
 		},
 	});
@@ -468,6 +523,8 @@ export function setupSubagents(pi: ExtensionAPI, background: BackgroundHub) {
 
 			let text = `${describeSubagent(snap)}\nTurns: ${snap.turns}`;
 			if (snap.errorText) text += `\nError: ${snap.errorText}`;
+			const question = snap.pendingQuestions[0];
+			if (question) text += `\nPending question: ${question.text}`;
 
 			const output = latestText(snap);
 			if (output) {
@@ -511,6 +568,26 @@ export function setupSubagents(pi: ExtensionAPI, background: BackgroundHub) {
 	});
 
 	// --- Result message rendering ------------------------------------------
+
+	pi.registerMessageRenderer("subagent-question", (message, _options, theme) => {
+		const details = (message.details ?? {}) as { id?: string; title?: string };
+		const header =
+			theme.fg("warning", "?") +
+			" " +
+			theme.fg("accent", theme.bold(`subagent ${details.id ?? "?"}`)) +
+			theme.fg("muted", ` · ${details.title ?? ""} · needs an answer`);
+		const content = typeof message.content === "string" ? message.content : "";
+		const body = content.split("\n").slice(1).join("\n").trim();
+		const container = new Text(header, 0, 0);
+		const md = new Markdown(body, 0, 0, getMarkdownTheme());
+		return {
+			render: (width: number) => [...container.render(width), ...md.render(width)],
+			invalidate: () => {
+				container.invalidate();
+				md.invalidate();
+			},
+		};
+	});
 
 	pi.registerMessageRenderer("subagent-result", (message, _options, theme) => {
 		const details = (message.details ?? {}) as {

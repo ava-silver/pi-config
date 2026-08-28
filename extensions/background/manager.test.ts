@@ -141,6 +141,33 @@ test("idle restarts respect the concurrency cap", async () => {
 	});
 });
 
+test("a subagent can ask the parent and continue with its answer", async () => {
+	await withManager(async (manager, runtime) => {
+		const questions: string[] = [];
+		manager.view.setOnQuestion((_snap, question) => questions.push(question.text));
+
+		const snap = await runTool(runtime, manager.spawn(task("ASK: Which API should I use?")));
+		await runTool(runtime, manager.waitFor([snap.id]));
+
+		const waiting = manager.view.get(snap.id);
+		assert.equal(waiting?.status, "running");
+		assert.deepEqual(
+			waiting?.pendingQuestions.map((question) => question.text),
+			["Which API should I use?"],
+		);
+		assert.deepEqual(questions, ["Which API should I use?"]);
+
+		const answered = await runTool(runtime, manager.answer(snap.id, "Use the SDK API."));
+		assert.equal(answered.text, "Which API should I use?");
+		await runTool(runtime, manager.waitFor([snap.id]));
+
+		const done = manager.view.get(snap.id);
+		assert.equal(done?.status, "done");
+		assert.deepEqual(done?.pendingQuestions, []);
+		assert.match(done?.finalText ?? "", /Use the SDK API/);
+	});
+});
+
 test("send steers an idle subagent into another turn", async () => {
 	await withManager(async (manager, runtime) => {
 		const snap = await runTool(runtime, manager.spawn(task("First turn")));

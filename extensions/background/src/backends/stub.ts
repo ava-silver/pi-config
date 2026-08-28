@@ -66,10 +66,12 @@ const makeStubSession = (profile: StubProfile, task: SpawnTask): Effect.Effect<S
 			closed: false,
 			/** True between the driver dequeuing a prompt and registering its turn fiber. */
 			dispatching: false,
+			pendingQuestionId: undefined as string | undefined,
 		};
 
 		const events = yield* Queue.make<SubagentEvent, Cause.Done>();
 		const inbox = yield* Queue.make<string, Cause.Done>();
+		const answers = yield* Queue.make<string, Cause.Done>();
 		const activeTurn = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined);
 
 		const emit = (event: SubagentEvent) =>
@@ -90,7 +92,21 @@ const makeStubSession = (profile: StubProfile, task: SpawnTask): Effect.Effect<S
 		const runTurn = (userText: string, turn: number) =>
 			Effect.gen(function* () {
 				yield* emit({ _tag: "RunStarted" });
-				const failing = userText.trimStart().startsWith("FAIL:");
+				let effectiveText = userText;
+				if (userText.trimStart().startsWith("ASK:")) {
+					const questionId = `q-${turn + 1}`;
+					const question = userText.replace(/^\s*ASK:\s*/, "");
+					state.pendingQuestionId = questionId;
+					yield* emit({
+						_tag: "QuestionAsked",
+						question: { id: questionId, text: question },
+					});
+					const answer = yield* Queue.take(answers).pipe(Effect.orDie);
+					state.pendingQuestionId = undefined;
+					yield* emit({ _tag: "QuestionClosed", questionId });
+					effectiveText = `${userText}\nParent response: ${answer}`;
+				}
+				const failing = effectiveText.trimStart().startsWith("FAIL:");
 
 				const thinking = "Looking at the task and planning an approach...";
 				for (const delta of chunked(thinking, 16)) {
@@ -150,7 +166,9 @@ const makeStubSession = (profile: StubProfile, task: SpawnTask): Effect.Effect<S
 				}
 
 				const finalText =
-					`[stub] completed: ${firstLine(userText).slice(0, 200)}\n\n` + `This is a stub subagent turn ${turn + 1}.`;
+					`[stub] completed: ${firstLine(effectiveText).slice(0, 200)}\n\n` +
+					`This is a stub subagent turn ${turn + 1}.` +
+					(effectiveText.includes("Parent response:") ? `\n${effectiveText.split("Parent response:")[1]?.trim()}` : "");
 				for (const delta of chunked(finalText, 24)) {
 					yield* emit({ _tag: "AssistantDelta", kind: "text", delta });
 					yield* pause;
@@ -205,6 +223,7 @@ const makeStubSession = (profile: StubProfile, task: SpawnTask): Effect.Effect<S
 			Effect.gen(function* () {
 				state.closed = true;
 				yield* Queue.end(inbox).pipe(Effect.ignore);
+				yield* Queue.end(answers).pipe(Effect.ignore);
 				yield* Queue.end(events).pipe(Effect.ignore);
 			}),
 		);
@@ -237,6 +256,13 @@ const makeStubSession = (profile: StubProfile, task: SpawnTask): Effect.Effect<S
 			meta: Effect.sync(() => state.meta),
 			events: Stream.fromQueue(events),
 			send: submit,
+			answer: (questionId, text) =>
+				Effect.suspend(() => {
+					if (state.pendingQuestionId !== questionId) {
+						return new SendError({ message: `Stub question "${questionId}" is no longer pending.` });
+					}
+					return Queue.offer(answers, text).pipe(Effect.asVoid);
+				}),
 			interrupt: Effect.gen(function* () {
 				// Drop queued prompts so interrupting cannot immediately start
 				// another turn, then stop the active turn. A prompt may be mid-flight

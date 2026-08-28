@@ -18,6 +18,7 @@ import type {
 	SpawnTask,
 	SubagentEvent,
 	SubagentMeta,
+	SubagentQuestion,
 	SubagentSession,
 	SubagentSnapshot,
 	SubagentStatus,
@@ -54,6 +55,7 @@ interface MutableSnapshot {
 	liveAssistant?: { text: string; thinking: string };
 	liveTools: LiveToolState[];
 	queued: SubagentSnapshot["queued"];
+	pendingQuestions: SubagentQuestion[];
 	finalText: string;
 	turns: number;
 }
@@ -82,6 +84,8 @@ export interface SubagentReadModel {
 	subscribeTo(id: string, listener: () => void): () => void;
 	/** Fire-and-forget: steer/continue a subagent (takeover input). */
 	requestSend(id: string, text: string): void;
+	/** Fire-and-forget: answer the oldest pending question (takeover input). */
+	requestAnswer(id: string, text: string): void;
 	/** Fire-and-forget: abort a running subagent (dashboard `x`, takeover). */
 	requestAbort(id: string): void;
 	/**
@@ -90,6 +94,7 @@ export interface SubagentReadModel {
 	 * delivered as a follow-up message).
 	 */
 	setOnSettled(hook: ((snap: SubagentSnapshot, consumed: boolean) => void) | undefined): void;
+	setOnQuestion(hook: ((snap: SubagentSnapshot, question: SubagentQuestion) => void) | undefined): void;
 }
 
 // --- Service --------------------------------------------------------------------
@@ -113,6 +118,7 @@ export interface SubagentManagerShape {
 	/** Cancel running subagents; resolves when they have settled. */
 	cancel(ids: ReadonlyArray<string>): Effect.Effect<ReadonlyArray<CancelResult>>;
 	send(id: string, text: string): Effect.Effect<void, SendError>;
+	answer(id: string, text: string): Effect.Effect<SubagentQuestion, SendError>;
 	get(id: string): Effect.Effect<SubagentSnapshot | undefined>;
 	readonly list: Effect.Effect<ReadonlyArray<SubagentSnapshot>>;
 	readonly disposeAll: Effect.Effect<void>;
@@ -145,6 +151,7 @@ const makeManager = (spawnFn: SpawnFn) =>
 		let reserved = 0;
 		let disposed = false;
 		let onSettled: ((snap: SubagentSnapshot, consumed: boolean) => void) | undefined;
+		let onQuestion: ((snap: SubagentSnapshot, question: SubagentQuestion) => void) | undefined;
 
 		const notify = (id?: string) => {
 			const waiters = changeWaiters;
@@ -239,6 +246,7 @@ const makeManager = (spawnFn: SpawnFn) =>
 			entry.liveToolMap.clear();
 			s.liveTools = [];
 			s.queued = [];
+			s.pendingQuestions = [];
 			const consumed = (waitInterest.get(s.id) ?? 0) > 0;
 			notify(s.id);
 			try {
@@ -312,6 +320,17 @@ const makeManager = (spawnFn: SpawnFn) =>
 				case "QueueChanged":
 					s.queued = event.queued;
 					break;
+				case "QuestionAsked":
+					s.pendingQuestions.push(event.question);
+					try {
+						onQuestion?.(s, event.question);
+					} catch {
+						// Parent notification failures must not corrupt child state.
+					}
+					break;
+				case "QuestionClosed":
+					s.pendingQuestions = s.pendingQuestions.filter((question) => question.id !== event.questionId);
+					break;
 				case "UsageChanged":
 					const tokens = event.tokens ?? s.usage.tokens;
 					const contextWindow = event.contextWindow ?? s.usage.contextWindow;
@@ -375,6 +394,7 @@ const makeManager = (spawnFn: SpawnFn) =>
 							transcript: [],
 							liveTools: [],
 							queued: [],
+							pendingQuestions: [],
 							finalText: "",
 							turns: 0,
 						},
@@ -421,7 +441,10 @@ const makeManager = (spawnFn: SpawnFn) =>
 				addInterest(unique);
 				const loop = Effect.gen(function* () {
 					while (true) {
-						const pending = unique.filter((id) => entries.get(id)?.snapshot.status === "running");
+						const pending = unique.filter((id) => {
+							const snapshot = entries.get(id)?.snapshot;
+							return snapshot?.status === "running" && snapshot.pendingQuestions.length === 0;
+						});
 						if (pending.length === 0) return;
 						onPending?.(pending);
 						yield* nextChange;
@@ -529,6 +552,26 @@ const makeManager = (spawnFn: SpawnFn) =>
 				return entry.session.send(text);
 			});
 
+		const answer = (id: string, text: string) =>
+			Effect.suspend((): Effect.Effect<SubagentQuestion, SendError> => {
+				const entry = entries.get(id);
+				const question = entry?.snapshot.pendingQuestions[0];
+				if (!entry || !question || disposed) {
+					return new SendError({ message: `Subagent "${id}" has no pending question.` });
+				}
+				return entry.session.answer(question.id, text).pipe(
+					Effect.tap(() =>
+						Effect.sync(() => {
+							entry.snapshot.pendingQuestions = entry.snapshot.pendingQuestions.filter(
+								(pending) => pending.id !== question.id,
+							);
+							notify(id);
+						}),
+					),
+					Effect.as(question),
+				);
+			});
+
 		const disposeAll = Effect.gen(function* () {
 			disposed = true;
 			const all = [...entries.values()];
@@ -571,6 +614,9 @@ const makeManager = (spawnFn: SpawnFn) =>
 			requestSend: (id, text) => {
 				runDetached(send(id, text).pipe(Effect.ignore));
 			},
+			requestAnswer: (id, text) => {
+				runDetached(answer(id, text).pipe(Effect.ignore));
+			},
 			requestAbort: (id) => {
 				const entry = entries.get(id);
 				if (!entry) return;
@@ -580,6 +626,9 @@ const makeManager = (spawnFn: SpawnFn) =>
 			},
 			setOnSettled: (hook) => {
 				onSettled = hook;
+			},
+			setOnQuestion: (hook) => {
+				onQuestion = hook;
 			},
 		};
 
@@ -592,6 +641,7 @@ const makeManager = (spawnFn: SpawnFn) =>
 			waitFor,
 			cancel,
 			send,
+			answer,
 			get: (id) => Effect.sync(() => entries.get(id)?.snapshot),
 			list: Effect.sync(() => [...entries.values()].map((e) => e.snapshot)),
 			disposeAll,

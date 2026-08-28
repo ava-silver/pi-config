@@ -89,7 +89,8 @@ class TakeoverView implements Component, Focusable {
 			const text = value.trim();
 			if (!text) return;
 			this.input.setValue("");
-			this.view.requestSend(this.id, text);
+			if ((this.snap()?.pendingQuestions.length ?? 0) > 0) this.view.requestAnswer(this.id, text);
+			else this.view.requestSend(this.id, text);
 			this.scrollOffset = 0;
 			this.tui.requestRender();
 		};
@@ -163,9 +164,8 @@ class TakeoverView implements Component, Focusable {
 
 	private viewportHeight(): number {
 		const rows = this.tui.terminal.rows || 30;
-		// The complete view renders viewport + 7 chrome rows. Using rows - 8
-		// makes the overlay exactly terminal rows - 1.
-		return Math.max(6, rows - 8);
+		// Reserve seven chrome rows, plus one while a question is visible.
+		return Math.max(6, rows - 8 - ((this.snap()?.pendingQuestions.length ?? 0) > 0 ? 1 : 0));
 	}
 
 	render(width: number): string[] {
@@ -220,12 +220,16 @@ class TakeoverView implements Component, Focusable {
 		lines.push(...body.slice(0, viewport));
 
 		lines.push(border);
+		const pendingQuestion = snap.pendingQuestions[0];
+		if (pendingQuestion) {
+			lines.push(truncateToWidth(theme.fg("warning", `question: ${pendingQuestion.text}`), width));
+		}
 		lines.push(...this.input.render(width));
 		lines.push(
 			truncateToWidth(
 				theme.fg(
 					"dim",
-					`${configuredKeys(this.keybindings, "tui.input.submit")} send · ${configuredKeys(this.keybindings, "app.interrupt")} back · ${configuredKeys(this.keybindings, "app.clear")} abort run · ${configuredKeys(this.keybindings, "tui.editor.cursorUp")}/${configuredKeys(this.keybindings, "tui.editor.cursorDown")} scroll · ${configuredKeys(this.keybindings, "tui.editor.pageUp")}/${configuredKeys(this.keybindings, "tui.editor.pageDown")} page`,
+					`${configuredKeys(this.keybindings, "tui.input.submit")} ${pendingQuestion ? "answer" : "send"} · ${configuredKeys(this.keybindings, "app.interrupt")} back · ${configuredKeys(this.keybindings, "app.clear")} abort run · ${configuredKeys(this.keybindings, "tui.editor.cursorUp")}/${configuredKeys(this.keybindings, "tui.editor.cursorDown")} scroll · ${configuredKeys(this.keybindings, "tui.editor.pageUp")}/${configuredKeys(this.keybindings, "tui.editor.pageDown")} page`,
 				),
 				width,
 			),

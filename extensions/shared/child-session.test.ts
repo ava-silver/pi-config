@@ -96,7 +96,16 @@ test("child denylist keeps extension and workflow structured tools available", a
 
 		assert.deepEqual(
 			[...CHILD_EXCLUDED_TOOL_NAMES],
-			["subagent_spawn", "subagent_wait", "subagent_cancel", "subagent_check", "subagent_list", "workflow", "ask_user"],
+			[
+				"subagent_spawn",
+				"subagent_wait",
+				"subagent_answer",
+				"subagent_cancel",
+				"subagent_check",
+				"subagent_list",
+				"workflow",
+				"ask_user",
+			],
 		);
 		const allTools = new Set(session.getAllTools().map((tool) => tool.name));
 		const activeTools = new Set(session.getActiveToolNames());
@@ -115,6 +124,39 @@ test("child denylist keeps extension and workflow structured tools available", a
 
 		await Promise.all([shutdownAndDisposeChildSession(session), shutdownAndDisposeChildSession(session)]);
 		assert.equal(shutdowns, 1);
+	});
+});
+
+test("child session starts with web tools and no extension errors", async () => {
+	await withTempDir(async (directory) => {
+		const settingsManager = SettingsManager.inMemory(undefined, {
+			projectTrusted: false,
+		});
+		const loader = new DefaultResourceLoader({
+			cwd: directory,
+			agentDir: path.join(directory, "agent"),
+			settingsManager,
+			additionalExtensionPaths: [path.join(import.meta.dirname, "..", "web-search", "index.ts")],
+		});
+		await loader.reload();
+		assert.deepEqual(loader.getExtensions().errors, []);
+
+		const { session } = await createAgentSession({
+			cwd: directory,
+			resourceLoader: loader,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(directory),
+			...childToolPolicy(),
+		});
+		try {
+			await bindChildSessionExtensions(session);
+			const activeTools = new Set(session.getActiveToolNames());
+			for (const tool of ["fetch_content", "get_search_content", "web_search"]) {
+				assert.equal(activeTools.has(tool), true, `${tool} should be available to child sessions`);
+			}
+		} finally {
+			await shutdownAndDisposeChildSession(session);
+		}
 	});
 });
 

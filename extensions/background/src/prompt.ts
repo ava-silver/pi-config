@@ -2,7 +2,7 @@
 
 /** Describes subagent_spawn. */
 export const SUBAGENT_SPAWN_TOOL_DESCRIPTION =
-	"Spawn a background subagent: a fully autonomous, headless pi agent with its own context window. Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents/workflows or ask the user, and cannot see this conversation, so the prompt must be self-contained. Max 16 subagents can be running at once.";
+	"Spawn a background subagent: a headless pi agent with its own context window. Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. They can ask you for missing context through ask_parent, but the prompt should still include everything they need. Max 16 subagents can run at once.";
 
 /** Adds background subagent delegation to the parent model's available-tools prompt. */
 export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
@@ -12,6 +12,7 @@ export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
 export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
 	"Use subagent_spawn to delegate self-contained tasks that can run in the background; give it a complete, standalone prompt.",
 	"After subagent_spawn, keep working; results arrive automatically. Only call subagent_wait when you cannot proceed without the result.",
+	"When a subagent asks a question, answer it with subagent_answer. Use ask_user first only when the answer requires the user's input.",
 ];
 
 /** Model-facing schema descriptions for subagent_spawn task and execution options. */
@@ -35,7 +36,7 @@ export function buildSubagentSpawnResult(options: { id: string; title: string; m
 
 /** Describes explicit blocking collection of one or more subagent results. */
 export const SUBAGENT_WAIT_TOOL_DESCRIPTION =
-	"Block until all listed subagents have settled, then return their final outputs. Prefer letting results arrive automatically; use this only when you need a result before continuing.";
+	"Block until all listed subagents have settled or need an answer. Returns final outputs and any pending questions. Prefer automatic delivery; use this only when you need a result before continuing.";
 
 /** Model-facing schema description for the subagent ids to await. */
 export const SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS = {
@@ -62,6 +63,22 @@ export const SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS = {
 
 /** Describes listing all tracked running and settled subagents. */
 export const SUBAGENT_LIST_TOOL_DESCRIPTION = "List all subagents (running and finished) with their status.";
+
+export const SUBAGENT_ANSWER_TOOL_DESCRIPTION =
+	"Answer the oldest pending question from a subagent. The answer is delivered directly to the child's blocked ask_parent call so it can continue its current run.";
+
+export const SUBAGENT_ANSWER_PARAMETER_DESCRIPTIONS = {
+	id: "Subagent id that asked the question",
+	answer: "Direct answer with the context or decision the subagent needs",
+};
+
+export function buildSubagentQuestionMessage(options: { id: string; title: string; question: string }) {
+	return (
+		`Subagent ${options.id} "${options.title}" asks:\n\n${options.question}\n\n` +
+		`Answer with subagent_answer({ id: "${options.id}", answer: "..." }). ` +
+		"If the answer requires the user's input, ask the user first."
+	);
+}
 
 /** Builds the child completion/failure wrapper injected into the parent model's context. */
 export function buildSubagentResultMessage(options: {

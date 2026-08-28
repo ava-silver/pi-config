@@ -88,6 +88,11 @@ export interface QueuedMessage {
 	readonly kind: "steer" | "follow-up";
 }
 
+export interface SubagentQuestion {
+	readonly id: string;
+	readonly text: string;
+}
+
 // --- Events ------------------------------------------------------------------
 
 export type RunOutcome =
@@ -144,6 +149,8 @@ export type SubagentEvent =
 			readonly _tag: "QueueChanged";
 			readonly queued: ReadonlyArray<QueuedMessage>;
 	  }
+	| { readonly _tag: "QuestionAsked"; readonly question: SubagentQuestion }
+	| { readonly _tag: "QuestionClosed"; readonly questionId: string }
 	| {
 			readonly _tag: "UsageChanged";
 			readonly tokens?: number;
@@ -158,6 +165,7 @@ export interface SubagentSession {
 	readonly meta: Effect<SubagentMeta>;
 	readonly events: Stream<SubagentEvent>;
 	send(text: string): Effect<void, SendError>;
+	answer(questionId: string, text: string): Effect<void, SendError>;
 	readonly interrupt: Effect<void>;
 }
 
@@ -185,6 +193,7 @@ export interface SubagentSnapshot {
 	readonly liveAssistant?: { readonly text: string; readonly thinking: string };
 	readonly liveTools: ReadonlyArray<LiveToolState>;
 	readonly queued: ReadonlyArray<QueuedMessage>;
+	readonly pendingQuestions: ReadonlyArray<SubagentQuestion>;
 	/** Final text of the most recent completed run (v1 `finalOutput`). */
 	readonly finalText: string;
 	/** Count of finalized assistant messages (for subagent_check). */
