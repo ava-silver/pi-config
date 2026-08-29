@@ -63,6 +63,18 @@ function parseExecutionResult(value: unknown): ExecutionResult {
   };
 }
 
+async function createVenv(dir: string, opts: { signal: AbortSignal | undefined; timeoutMs: number }): Promise<void> {
+  try {
+    await runCommand("uv", ["venv", "--quiet", dir], opts);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      await runCommand("python3", ["-m", "venv", dir], opts);
+    } else {
+      throw error;
+    }
+  }
+}
+
 async function runCommand(
   command: string,
   args: string[],
@@ -149,7 +161,7 @@ export class PythonRepl {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-python-repl-"));
     await fs.chmod(tempDir, 0o700);
     try {
-      await runCommand("python3", ["-m", "venv", tempDir], { signal, timeoutMs: 60_000 });
+      await createVenv(tempDir, { signal, timeoutMs: 60_000 });
       this.assertOpen();
       this.tempDir = tempDir;
     } catch (error) {
