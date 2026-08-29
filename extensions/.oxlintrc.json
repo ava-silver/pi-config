@@ -1,20 +1,20 @@
 {
-	"rules": {
-		"complexity": ["error", 30],
-		"max-depth": ["error", 4],
-		"max-lines-per-function": ["error", 250],
-		"max-nested-callbacks": ["error", 4],
-		"max-params": ["error", 5],
-		"max-statements": ["error", 40],
-		"no-control-regex": "off"
-	},
-	"overrides": [
-		{
-			"files": ["**/*.test.ts"],
-			"rules": {
-				"typescript/no-floating-promises": "off",
-				"typescript/unbound-method": "off"
-			}
-		}
-	]
+  "rules": {
+    "complexity": ["error", 30],
+    "max-depth": ["error", 4],
+    "max-lines-per-function": ["error", 250],
+    "max-nested-callbacks": ["error", 4],
+    "max-params": ["error", 5],
+    "max-statements": ["error", 40],
+    "no-control-regex": "off"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts"],
+      "rules": {
+        "typescript/no-floating-promises": "off",
+        "typescript/unbound-method": "off"
+      }
+    }
+  ]
 }

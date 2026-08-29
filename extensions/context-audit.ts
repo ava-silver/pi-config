@@ -1,10 +1,10 @@
 import { getEncoding } from "js-tiktoken";
 import {
-	estimateTokens,
-	sessionEntryToContextMessages,
-	type BuildSystemPromptOptions,
-	type ExtensionAPI,
-	type SessionEntry,
+  estimateTokens,
+  sessionEntryToContextMessages,
+  type BuildSystemPromptOptions,
+  type ExtensionAPI,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -13,208 +13,208 @@ import { dirname, join } from "node:path";
 const REPORT_FILE = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pi", "context-audit.html");
 
 type ContextTool = {
-	name: string;
-	description: string;
-	parameters: unknown;
-	promptGuidelines?: string[];
-	sourceInfo: { path: string; source: string };
+  name: string;
+  description: string;
+  parameters: unknown;
+  promptGuidelines?: string[];
+  sourceInfo: { path: string; source: string };
 };
 
 export type ContextAuditInput = {
-	contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
-	systemPrompt: string;
-	options: BuildSystemPromptOptions;
-	activeToolNames: string[];
-	tools: ContextTool[];
-	contextEntries: SessionEntry[];
+  contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
+  systemPrompt: string;
+  options: BuildSystemPromptOptions;
+  activeToolNames: string[];
+  tools: ContextTool[];
+  contextEntries: SessionEntry[];
 };
 
 const tokenizer = getEncoding("o200k_base");
 
 function tokens(value: unknown): number {
-	try {
-		const text = typeof value === "string" ? value : JSON.stringify(value);
-		return text === undefined ? 0 : tokenizer.encode(text).length;
-	} catch {
-		return 0;
-	}
+  try {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    return text === undefined ? 0 : tokenizer.encode(text).length;
+  } catch {
+    return 0;
+  }
 }
 
 function count(value: number): string {
-	return new Intl.NumberFormat("en-US").format(value);
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 function escapeHtml(value: unknown): string {
-	return String(value)
-		.replaceAll("&", "&amp;")
-		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;")
-		.replaceAll('"', "&quot;")
-		.replaceAll("'", "&#39;");
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function details(summary: string, content: unknown, metadata = ""): string {
-	return `<details><summary>${escapeHtml(summary)}${metadata ? `<span>${escapeHtml(metadata)}</span>` : ""}</summary><pre>${escapeHtml(content)}</pre></details>`;
+  return `<details><summary>${escapeHtml(summary)}${metadata ? `<span>${escapeHtml(metadata)}</span>` : ""}</summary><pre>${escapeHtml(content)}</pre></details>`;
 }
 
 type Metric = { label: string; value: number; detail?: string };
 
 function groupMetrics(items: Metric[]): Metric[] {
-	return [
-		...items.reduce((groups, item) => {
-			const current = groups.get(item.label) ?? { value: 0, count: 0 };
-			groups.set(item.label, { value: current.value + item.value, count: current.count + 1 });
-			return groups;
-		}, new Map<string, { value: number; count: number }>()),
-	]
-		.map(([label, group]) => ({
-			label,
-			value: group.value,
-			detail: `${group.count} item${group.count === 1 ? "" : "s"}`,
-		}))
-		.sort((left, right) => right.value - left.value);
+  return [
+    ...items.reduce((groups, item) => {
+      const current = groups.get(item.label) ?? { value: 0, count: 0 };
+      groups.set(item.label, { value: current.value + item.value, count: current.count + 1 });
+      return groups;
+    }, new Map<string, { value: number; count: number }>()),
+  ]
+    .map(([label, group]) => ({
+      label,
+      value: group.value,
+      detail: `${group.count} item${group.count === 1 ? "" : "s"}`,
+    }))
+    .sort((left, right) => right.value - left.value);
 }
 
 function stackedBar(items: Metric[]): string {
-	const total = items.reduce((sum, item) => sum + item.value, 0) || 1;
-	return `<div class="stacked">${items
-		.map(
-			(item, index) =>
-				`<div style="width:${((item.value / total) * 100).toFixed(2)}%;--color:var(--chart-${(index % 6) + 1})" title="${escapeHtml(`${item.label}: ${count(item.value)} estimated tokens`)}"></div>`,
-		)
-		.join("")}</div><div class="legend">${items
-		.map(
-			(item, index) =>
-				`<span><i style="--color:var(--chart-${(index % 6) + 1})"></i>${escapeHtml(item.label)} <strong>${count(item.value)}</strong></span>`,
-		)
-		.join("")}</div>`;
+  const total = items.reduce((sum, item) => sum + item.value, 0) || 1;
+  return `<div class="stacked">${items
+    .map(
+      (item, index) =>
+        `<div style="width:${((item.value / total) * 100).toFixed(2)}%;--color:var(--chart-${(index % 6) + 1})" title="${escapeHtml(`${item.label}: ${count(item.value)} estimated tokens`)}"></div>`,
+    )
+    .join("")}</div><div class="legend">${items
+    .map(
+      (item, index) =>
+        `<span><i style="--color:var(--chart-${(index % 6) + 1})"></i>${escapeHtml(item.label)} <strong>${count(item.value)}</strong></span>`,
+    )
+    .join("")}</div>`;
 }
 
 function barChart(items: Metric[], limit = 12): string {
-	const shown = items.toSorted((left, right) => right.value - left.value).slice(0, limit);
-	const maximum = shown[0]?.value || 1;
-	return `<div class="bars">${shown
-		.map(
-			(item) =>
-				`<div class="bar-row"><div class="bar-label"><span>${escapeHtml(item.label)}</span><small>${escapeHtml(item.detail ?? "")}</small></div><div class="bar-track"><i style="width:${((item.value / maximum) * 100).toFixed(2)}%"></i></div><strong>${count(item.value)}</strong></div>`,
-		)
-		.join("")}</div>`;
+  const shown = items.toSorted((left, right) => right.value - left.value).slice(0, limit);
+  const maximum = shown[0]?.value || 1;
+  return `<div class="bars">${shown
+    .map(
+      (item) =>
+        `<div class="bar-row"><div class="bar-label"><span>${escapeHtml(item.label)}</span><small>${escapeHtml(item.detail ?? "")}</small></div><div class="bar-track"><i style="width:${((item.value / maximum) * 100).toFixed(2)}%"></i></div><strong>${count(item.value)}</strong></div>`,
+    )
+    .join("")}</div>`;
 }
 
 function sourceLabel(source: string): string {
-	return source === "auto" ? "local" : source;
+  return source === "auto" ? "local" : source;
 }
 
 function entryLabel(entry: SessionEntry): string {
-	if (entry.type === "message") {
-		return entry.message.role === "toolResult" ? `Tool result: ${entry.message.toolName}` : entry.message.role;
-	}
-	if (entry.type === "custom_message") return `Extension message: ${entry.customType}`;
-	if (entry.type === "compaction") return "Compaction summary";
-	if (entry.type === "branch_summary") return "Branch summary";
-	return entry.type;
+  if (entry.type === "message") {
+    return entry.message.role === "toolResult" ? `Tool result: ${entry.message.toolName}` : entry.message.role;
+  }
+  if (entry.type === "custom_message") return `Extension message: ${entry.customType}`;
+  if (entry.type === "compaction") return "Compaction summary";
+  if (entry.type === "branch_summary") return "Branch summary";
+  return entry.type;
 }
 
 export function contextAuditHtml(input: ContextAuditInput): string {
-	const activeNames = new Set(input.activeToolNames);
-	const activeTools = input.tools.filter((tool) => activeNames.has(tool.name));
-	const inactiveTools = input.tools.filter((tool) => !activeNames.has(tool.name));
-	const modelSkills = (input.options.skills ?? []).filter((skill) => !skill.disableModelInvocation);
-	const manualSkills = (input.options.skills ?? []).filter((skill) => skill.disableModelInvocation);
-	const messages = input.contextEntries.flatMap((entry) =>
-		sessionEntryToContextMessages(entry).map((message) => ({ entry, message })),
-	);
-	const toolTokens = activeTools.reduce((sum, tool) => sum + tokens(tool), 0);
-	const messageTokens = messages.reduce((sum, item) => sum + estimateTokens(item.message), 0);
-	const usage = input.contextUsage;
-	const usageLabel = usage
-		? `${usage.tokens === null ? "Unknown" : `${count(usage.tokens)} tokens`} / ${count(usage.contextWindow)}${usage.percent === null ? "" : ` (${usage.percent.toFixed(1)}%)`}`
-		: "Unavailable";
-	const generated = new Date().toLocaleString();
-	const topLevelMetrics: Metric[] = [
-		{ label: "System prompt", value: tokens(input.systemPrompt) },
-		{ label: "Tool definitions", value: toolTokens },
-		{ label: "Conversation", value: messageTokens },
-	];
-	const knownPromptMetrics: Metric[] = [
-		...(input.options.contextFiles ?? []).map((file) => ({
-			label: file.path,
-			value: tokens(file.content),
-			detail: "context file",
-		})),
-		...modelSkills.map((skill) => ({
-			label: skill.name,
-			value: tokens(skill.description),
-			detail: "skill catalog description",
-		})),
-		...(input.options.customPrompt === undefined
-			? []
-			: [{ label: "Custom base prompt", value: tokens(input.options.customPrompt), detail: "replacement prompt" }]),
-		{ label: "Appended prompt", value: tokens(input.options.appendSystemPrompt ?? "") },
-		{ label: "Tool snippets", value: tokens(input.options.toolSnippets ?? {}) },
-		{ label: "Tool guidelines", value: tokens(input.options.promptGuidelines ?? []) },
-	].filter((metric) => metric.value > 0);
-	const knownPromptTokens = knownPromptMetrics.reduce((sum, metric) => sum + metric.value, 0);
-	const promptMetrics = [
-		...knownPromptMetrics,
-		{
-			label: input.options.customPrompt === undefined ? "Built-in prompt and formatting" : "Prompt formatting",
-			value: Math.max(0, tokens(input.systemPrompt) - knownPromptTokens),
-		},
-	].filter((metric) => metric.value > 0);
-	const toolSourceMetrics = groupMetrics(
-		activeTools.map((tool) => ({ label: sourceLabel(tool.sourceInfo.source), value: tokens(tool) })),
-	);
-	const toolMetrics = activeTools.map((tool) => ({
-		label: tool.name,
-		value: tokens(tool),
-		detail: sourceLabel(tool.sourceInfo.source),
-	}));
-	const messageMetrics = messages.map(({ entry, message }, index) => ({
-		label: `${index + 1}. ${entryLabel(entry)}`,
-		value: estimateTokens(message),
-	}));
-	const messageGroupMetrics = groupMetrics(
-		messages.map(({ entry, message }) => ({ label: entryLabel(entry), value: estimateTokens(message) })),
-	);
+  const activeNames = new Set(input.activeToolNames);
+  const activeTools = input.tools.filter((tool) => activeNames.has(tool.name));
+  const inactiveTools = input.tools.filter((tool) => !activeNames.has(tool.name));
+  const modelSkills = (input.options.skills ?? []).filter((skill) => !skill.disableModelInvocation);
+  const manualSkills = (input.options.skills ?? []).filter((skill) => skill.disableModelInvocation);
+  const messages = input.contextEntries.flatMap((entry) =>
+    sessionEntryToContextMessages(entry).map((message) => ({ entry, message })),
+  );
+  const toolTokens = activeTools.reduce((sum, tool) => sum + tokens(tool), 0);
+  const messageTokens = messages.reduce((sum, item) => sum + estimateTokens(item.message), 0);
+  const usage = input.contextUsage;
+  const usageLabel = usage
+    ? `${usage.tokens === null ? "Unknown" : `${count(usage.tokens)} tokens`} / ${count(usage.contextWindow)}${usage.percent === null ? "" : ` (${usage.percent.toFixed(1)}%)`}`
+    : "Unavailable";
+  const generated = new Date().toLocaleString();
+  const topLevelMetrics: Metric[] = [
+    { label: "System prompt", value: tokens(input.systemPrompt) },
+    { label: "Tool definitions", value: toolTokens },
+    { label: "Conversation", value: messageTokens },
+  ];
+  const knownPromptMetrics: Metric[] = [
+    ...(input.options.contextFiles ?? []).map((file) => ({
+      label: file.path,
+      value: tokens(file.content),
+      detail: "context file",
+    })),
+    ...modelSkills.map((skill) => ({
+      label: skill.name,
+      value: tokens(skill.description),
+      detail: "skill catalog description",
+    })),
+    ...(input.options.customPrompt === undefined
+      ? []
+      : [{ label: "Custom base prompt", value: tokens(input.options.customPrompt), detail: "replacement prompt" }]),
+    { label: "Appended prompt", value: tokens(input.options.appendSystemPrompt ?? "") },
+    { label: "Tool snippets", value: tokens(input.options.toolSnippets ?? {}) },
+    { label: "Tool guidelines", value: tokens(input.options.promptGuidelines ?? []) },
+  ].filter((metric) => metric.value > 0);
+  const knownPromptTokens = knownPromptMetrics.reduce((sum, metric) => sum + metric.value, 0);
+  const promptMetrics = [
+    ...knownPromptMetrics,
+    {
+      label: input.options.customPrompt === undefined ? "Built-in prompt and formatting" : "Prompt formatting",
+      value: Math.max(0, tokens(input.systemPrompt) - knownPromptTokens),
+    },
+  ].filter((metric) => metric.value > 0);
+  const toolSourceMetrics = groupMetrics(
+    activeTools.map((tool) => ({ label: sourceLabel(tool.sourceInfo.source), value: tokens(tool) })),
+  );
+  const toolMetrics = activeTools.map((tool) => ({
+    label: tool.name,
+    value: tokens(tool),
+    detail: sourceLabel(tool.sourceInfo.source),
+  }));
+  const messageMetrics = messages.map(({ entry, message }, index) => ({
+    label: `${index + 1}. ${entryLabel(entry)}`,
+    value: estimateTokens(message),
+  }));
+  const messageGroupMetrics = groupMetrics(
+    messages.map(({ entry, message }) => ({ label: entryLabel(entry), value: estimateTokens(message) })),
+  );
 
-	const contextFiles = input.options.contextFiles?.length
-		? input.options.contextFiles
-				.map((file) => details(file.path, file.content, `${count(tokens(file.content))} estimated tokens`))
-				.join("")
-		: '<p class="empty">None</p>';
-	const skills = modelSkills.length
-		? modelSkills
-				.map(
-					(skill) =>
-						`<div class="item"><strong>${escapeHtml(skill.name)}</strong><span>${count(tokens(skill.description))} estimated description tokens</span><p>${escapeHtml(skill.description)}</p><code>${escapeHtml(skill.filePath)}</code></div>`,
-				)
-				.join("")
-		: '<p class="empty">None</p>';
-	const tools = activeTools.length
-		? activeTools
-				.map((tool) =>
-					details(
-						tool.name,
-						JSON.stringify(tool, null, 2),
-						`${count(tokens(tool))} estimated JSON tokens · ${tool.sourceInfo.path}`,
-					),
-				)
-				.join("")
-		: '<p class="empty">None</p>';
-	const conversation = messages.length
-		? messages
-				.map(({ entry, message }, index) =>
-					details(
-						`${index + 1}. ${entryLabel(entry)}`,
-						JSON.stringify(message, null, 2),
-						`${count(estimateTokens(message))} estimated tokens`,
-					),
-				)
-				.join("")
-		: '<p class="empty">None</p>';
+  const contextFiles = input.options.contextFiles?.length
+    ? input.options.contextFiles
+        .map((file) => details(file.path, file.content, `${count(tokens(file.content))} estimated tokens`))
+        .join("")
+    : '<p class="empty">None</p>';
+  const skills = modelSkills.length
+    ? modelSkills
+        .map(
+          (skill) =>
+            `<div class="item"><strong>${escapeHtml(skill.name)}</strong><span>${count(tokens(skill.description))} estimated description tokens</span><p>${escapeHtml(skill.description)}</p><code>${escapeHtml(skill.filePath)}</code></div>`,
+        )
+        .join("")
+    : '<p class="empty">None</p>';
+  const tools = activeTools.length
+    ? activeTools
+        .map((tool) =>
+          details(
+            tool.name,
+            JSON.stringify(tool, null, 2),
+            `${count(tokens(tool))} estimated JSON tokens · ${tool.sourceInfo.path}`,
+          ),
+        )
+        .join("")
+    : '<p class="empty">None</p>';
+  const conversation = messages.length
+    ? messages
+        .map(({ entry, message }, index) =>
+          details(
+            `${index + 1}. ${entryLabel(entry)}`,
+            JSON.stringify(message, null, 2),
+            `${count(estimateTokens(message))} estimated tokens`,
+          ),
+        )
+        .join("")
+    : '<p class="empty">None</p>';
 
-	return `<!doctype html>
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -309,24 +309,24 @@ ${conversation}
 }
 
 export default function contextAuditExtension(pi: ExtensionAPI): void {
-	pi.registerCommand("context-audit", {
-		description: "Open a browser report of everything that can consume model context",
-		handler: async (_args, ctx) => {
-			const contextUsage = ctx.getContextUsage();
-			const html = contextAuditHtml({
-				...(contextUsage ? { contextUsage } : {}),
-				systemPrompt: ctx.getSystemPrompt(),
-				options: ctx.getSystemPromptOptions(),
-				activeToolNames: pi.getActiveTools(),
-				tools: pi.getAllTools(),
-				contextEntries: ctx.sessionManager.buildContextEntries(),
-			});
-			await mkdir(dirname(REPORT_FILE), { recursive: true });
-			await writeFile(REPORT_FILE, html, { mode: 0o600 });
-			const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-			const commandArgs = process.platform === "win32" ? ["/c", "start", "", REPORT_FILE] : [REPORT_FILE];
-			const result = await pi.exec(command, commandArgs, { timeout: 5_000 });
-			if (result.code !== 0) ctx.ui.notify(`Could not open ${REPORT_FILE}`, "error");
-		},
-	});
+  pi.registerCommand("context-audit", {
+    description: "Open a browser report of everything that can consume model context",
+    handler: async (_args, ctx) => {
+      const contextUsage = ctx.getContextUsage();
+      const html = contextAuditHtml({
+        ...(contextUsage ? { contextUsage } : {}),
+        systemPrompt: ctx.getSystemPrompt(),
+        options: ctx.getSystemPromptOptions(),
+        activeToolNames: pi.getActiveTools(),
+        tools: pi.getAllTools(),
+        contextEntries: ctx.sessionManager.buildContextEntries(),
+      });
+      await mkdir(dirname(REPORT_FILE), { recursive: true });
+      await writeFile(REPORT_FILE, html, { mode: 0o600 });
+      const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+      const commandArgs = process.platform === "win32" ? ["/c", "start", "", REPORT_FILE] : [REPORT_FILE];
+      const result = await pi.exec(command, commandArgs, { timeout: 5_000 });
+      if (result.code !== 0) ctx.ui.notify(`Could not open ${REPORT_FILE}`, "error");
+    },
+  });
 }
