@@ -12,7 +12,6 @@
   "hideThinkingBlock": false,
   "packages": [
     "npm:pi-btw",
-    "npm:pi-auto-rename",
     "~/repos/pi-spotify-provider"
   ],
   "extensions": [
