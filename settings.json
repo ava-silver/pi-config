@@ -13,26 +13,25 @@
   "packages": [
     "npm:pi-btw",
     "npm:pi-auto-rename",
-    "~/go/src/github.com/DataDog/datadog-pi-packages/packages/dd-ai-gateway"
+    "~/repos/pi-spotify-provider"
   ],
   "extensions": [
     "-extensions/workflows/index.ts",
-    "-extensions/trajectory/index.ts",
-    "-extensions/ui-performance.ts"
+    "-extensions/slack-mcp/index.ts",
+    "-extensions/read-aloud/index.ts",
+    "-extensions/ui-performance.ts",
+    "-extensions/spend.ts",
+    "-extensions/trajectory/index.ts"
   ],
   "skills": [
     "~/skills/skills",
     "~/dd/claude-marketplace/serverless/skills",
     "~/dd/experimental/users/ava.silver/ssi/skills/"
   ],
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-luna",
+  "defaultProvider": "spotify",
+  "defaultModel": "claude-sonnet-4-6@default",
   "enabledModels": [
-    "dd-ai-gateway/baseten/deepseek-ai/DeepSeek-V4-Flash-0731",
-    "openai-codex/gpt-5.6-sol",
-    "openai-codex/gpt-5.6-terra",
-    "anthropic/claude-opus-4-8",
-    "openai-codex/gpt-5.6-luna",
-    "google/gemini-3.8-flash"
+    "spotify/claude-opus-4-6@default",
+    "spotify/claude-sonnet-4-6@default"
   ]
 }
