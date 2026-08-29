@@ -32,6 +32,7 @@ export interface RunWorkflowSandboxOptions {
   signal: AbortSignal;
   onAgent: (prompt: string, options: SandboxAgentOptions, signal: AbortSignal) => Promise<SandboxAgentResult>;
   onPhase: (title: string) => void;
+  vmTimeoutMs?: number;
 }
 
 function byteLength(value: string) {
@@ -284,6 +285,7 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
         token,
         source: options.source,
         argsJson,
+        ...(options.vmTimeoutMs !== undefined ? { vmTimeoutMs: options.vmTimeoutMs } : {}),
       },
       (error) => {
         if (error) finish(error);

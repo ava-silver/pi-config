@@ -1,40 +1,42 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { PythonRepl } from "./runtime.ts";
 
-test("Python REPL preserves state and returns the final expression", async (t) => {
-  const repl = new PythonRepl();
-  t.after(() => repl.close());
+// Tests that don't require an isolated environment share one REPL to avoid
+// paying the ~1.8s venv-creation cost four times.
+let shared: PythonRepl;
+before(async () => {
+  shared = new PythonRepl();
+});
+after(async () => {
+  await shared.close();
+});
 
-  const assigned = await repl.execute("value = 40");
+test("Python REPL preserves state and returns the final expression", async () => {
+  const assigned = await shared.execute("value = 40");
   assert.equal(assigned.result, null);
 
-  const result = await repl.execute("value + 2");
+  const result = await shared.execute("value + 2");
   assert.equal(result.result, "42");
   assert.equal(result.error, null);
 });
 
-test("Python REPL captures output and exceptions", async (t) => {
-  const repl = new PythonRepl();
-  t.after(() => repl.close());
-
-  const result = await repl.execute('print("before")\nraise ValueError("bad value")');
+test("Python REPL captures output and exceptions", async () => {
+  const result = await shared.execute('print("before")\nraise ValueError("bad value")');
 
   assert.equal(result.stdout, "before\n");
   assert.match(result.error ?? "", /ValueError: bad value/);
 });
 
-test("clearing removes variables but keeps the temporary environment", async (t) => {
-  const repl = new PythonRepl();
-  t.after(() => repl.close());
-  await repl.execute("value = 42");
-  const environmentPath = repl.environmentPath;
+test("clearing removes variables but keeps the temporary environment", async () => {
+  await shared.execute("value = 42");
+  const environmentPath = shared.environmentPath;
 
-  await repl.clear();
-  const result = await repl.execute("value");
+  await shared.clear();
+  const result = await shared.execute("value");
 
-  assert.equal(repl.environmentPath, environmentPath);
+  assert.equal(shared.environmentPath, environmentPath);
   assert.match(result.error ?? "", /NameError/);
 });
 

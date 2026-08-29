@@ -176,7 +176,11 @@ process.on("message", (message) => {
     }
     initialized = true;
     token = message.token;
-    run(message.source, message.argsJson);
+    const vmTimeoutMs =
+      typeof message.vmTimeoutMs === "number" && Number.isFinite(message.vmTimeoutMs) && message.vmTimeoutMs > 0
+        ? message.vmTimeoutMs
+        : 1000;
+    run(message.source, message.argsJson, vmTimeoutMs);
     return;
   }
   if (message.token !== token || message.kind !== "agentResult") return;
@@ -187,7 +191,7 @@ process.on("message", (message) => {
   else pending.reject(new Error(typeof message.error === "string" ? message.error : "Agent IPC failed"));
 });
 
-function run(source, argsJson) {
+function run(source, argsJson, vmTimeoutMs = 1000) {
   try {
     const sandbox = Object.create(null);
     sandbox.__argsJson = argsJson;
@@ -215,7 +219,7 @@ function run(source, argsJson) {
     });
     new vm.Script(BOOTSTRAP, {
       filename: "workflow-bootstrap.js",
-    }).runInContext(context, { timeout: 1000 });
+    }).runInContext(context, { timeout: vmTimeoutMs });
     const wrapped = `
       globalThis.__workflowPromise = (async function workflow(agent, parallel, phase, args) {
         "use strict";
@@ -232,7 +236,7 @@ function run(source, argsJson) {
         return __workflowSerialize(value);
       });
     `;
-    new vm.Script(wrapped, { filename: "workflow-script.js" }).runInContext(context, { timeout: 1000 });
+    new vm.Script(wrapped, { filename: "workflow-script.js" }).runInContext(context, { timeout: vmTimeoutMs });
     Promise.resolve(context.__workflowPromise).then((resultJson) => {
       if (typeof resultJson !== "string") throw new Error("Workflow result was not serializable");
       send({ kind: "result", resultJson });

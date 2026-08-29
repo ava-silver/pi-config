@@ -66,7 +66,7 @@ test("sandbox rejects unawaited agent calls", async () => {
 });
 
 test("sandbox VM still rejects non-yielding synchronous code", async () => {
-  await assert.rejects(run(`while (true) {}`), /timed out/);
+  await assert.rejects(run(`while (true) {}`, { vmTimeoutMs: 50 }), /timed out/);
 });
 
 test("workflow agent invocations have no per-request wall timer", async () => {

@@ -9,7 +9,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives --ignore-pattern trajectory .",
     "prepare": "effect-tsgo patch",
-    "test": "node --test --experimental-strip-types",
+    "test": "bun test --parallel",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
