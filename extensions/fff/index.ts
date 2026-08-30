@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { resolve } from "node:path";
+import { statSync } from "node:fs";
+import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -40,8 +41,6 @@ type WorkerGrepResult = {
   resultCount: number;
   output?: string;
 };
-type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void };
-
 function limit(value: number): number {
   return Math.min(MAX_LIMIT, Math.max(1, Math.floor(value)));
 }
@@ -50,15 +49,29 @@ function timeoutMs(value: number | undefined): number {
   return Math.max(1, Math.floor(value ?? DEFAULT_TIMEOUT_SECONDS)) * 1_000;
 }
 
+function grepMode(pattern: string): "plain" | "regex" {
+  return /[.*+?^${}()|[\]\\]/.test(pattern) ? "regex" : "plain";
+}
+
 function isWorkspacePath(path: string | undefined, cwd: string): boolean {
   if (!path || path.startsWith("~")) return !path?.startsWith("~");
   const target = resolve(cwd, path);
   return target === cwd || target.startsWith(`${cwd}/`);
 }
 
-function query(path: string | undefined, pattern: string): string {
+function isWorkspaceFile(path: string | undefined, cwd: string): boolean {
+  if (!path || /[*?[{]/.test(path)) return false;
+  try {
+    return statSync(resolve(cwd, path)).isFile();
+  } catch {
+    const name = path.split("/").at(-1) ?? "";
+    return /\.[a-zA-Z][a-zA-Z0-9]{0,9}$/.test(name);
+  }
+}
+
+function query(path: string | undefined, pattern: string, cwd: string): string {
   if (!path) return pattern;
-  const normalized = path.replace(/^\.\//, "");
+  const normalized = (path.startsWith("/") ? relative(cwd, path) : path).replace(/^\.\//, "");
   if (normalized === ".") return pattern;
   const lastSegment = normalized.split("/").at(-1) ?? "";
   const constraint =
@@ -66,6 +79,18 @@ function query(path: string | undefined, pattern: string): string {
       ? normalized
       : `${normalized}/`;
   return `${constraint} ${pattern}`;
+}
+
+function killWorker(child: ChildProcess): void {
+  if (child.pid && process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+      return;
+    } catch {
+      // The worker may have already stopped.
+    }
+  }
+  child.kill("SIGKILL");
 }
 
 function formatGrep(result: WorkerGrepResult): string {
@@ -89,65 +114,71 @@ function formatGrep(result: WorkerGrepResult): string {
 }
 
 class FffWorker {
-  private child: ChildProcess | undefined;
-  private buffer = "";
+  private children = new Set<ChildProcess>();
   private nextId = 0;
-  private pending = new Map<number, Pending>();
 
-  private start(): ChildProcess {
-    if (this.child && !this.child.killed) return this.child;
-    const child = spawn("bun", [WORKER_PATH], { stdio: ["pipe", "pipe", "ignore"] });
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.receive(chunk));
-    child.once("exit", () => this.stop(new Error("FFF worker stopped.")));
-    child.once("error", (error) => this.stop(error));
-    this.child = child;
-    return child;
-  }
-
-  private receive(chunk: string): void {
-    this.buffer += chunk;
-    const lines = this.buffer.split("\n");
-    this.buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const message = JSON.parse(line) as { id: number; ok: boolean; result?: unknown; error?: string };
-      const pending = this.pending.get(message.id);
-      if (!pending) continue;
-      this.pending.delete(message.id);
-      if (message.ok) pending.resolve(message.result);
-      else pending.reject(new Error(message.error ?? "FFF search failed."));
-    }
-  }
-
-  stop(error = new Error("FFF search cancelled.")): void {
-    const child = this.child;
-    this.child = undefined;
-    if (child && !child.killed) child.kill("SIGKILL");
-    for (const pending of this.pending.values()) pending.reject(error);
-    this.pending.clear();
+  stop(_error?: Error): void {
+    for (const child of this.children) killWorker(child);
+    this.children.clear();
   }
 
   async request<T>(request: Record<string, unknown>, signal: AbortSignal, timeout: number): Promise<T> {
     if (signal.aborted) throw new Error("FFF search cancelled.");
-    const child = this.start();
     const id = ++this.nextId;
+    const child = spawn("bun", [WORKER_PATH], {
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    this.children.add(child);
+    child.stdout.setEncoding("utf8");
+
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => this.stop(new Error("FFF search timed out.")), timeout);
-      const abort = () => this.stop();
+      let buffer = "";
+      let settled = false;
+      const finish = (error?: Error, result?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        this.children.delete(child);
+        if (!child.killed) killWorker(child);
+        if (error) reject(error);
+        else resolve(result as T);
+      };
+      const timer = setTimeout(() => finish(new Error("FFF search timed out.")), timeout);
+      const abort = () => finish(new Error("FFF search cancelled."));
       signal.addEventListener("abort", abort, { once: true });
-      this.pending.set(id, {
-        resolve: (value) => {
-          clearTimeout(timer);
-          signal.removeEventListener("abort", abort);
-          resolve(value as T);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          signal.removeEventListener("abort", abort);
-          reject(error);
-        },
+      child.stdout.on("data", (chunk: string) => {
+        buffer += chunk;
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          try {
+            const message = JSON.parse(line) as { id: unknown; ok: unknown; result?: unknown; error?: unknown };
+            if (typeof message.id !== "number" || typeof message.ok !== "boolean")
+              throw new Error("Invalid FFF worker output.");
+            if (message.id !== id) continue;
+            finish(
+              message.ok
+                ? undefined
+                : new Error(typeof message.error === "string" ? message.error : "FFF search failed."),
+              message.result,
+            );
+          } catch {
+            finish(new Error("FFF worker returned invalid output."));
+          }
+        }
       });
-      child.stdin?.write(`${JSON.stringify({ id, ...request })}\n`);
+      child.once("error", (error) => finish(error));
+      child.once("exit", () => finish(new Error("FFF worker stopped.")));
+      if (!child.stdin) {
+        finish(new Error("FFF worker stdin is unavailable."));
+        return;
+      }
+      child.stdin.once("error", (error) => finish(error));
+      child.stdin.write(`${JSON.stringify({ id, ...request })}\n`, (error) => {
+        if (error) finish(error);
+      });
     });
   }
 }
@@ -163,11 +194,12 @@ export default function fff(pi: ExtensionAPI): void {
     parameters: FindParams,
     async execute(_id, params: FindInput, signal, _update, ctx) {
       const workspacePath = isWorkspacePath(params.path, ctx.cwd);
+      const useFff = workspacePath && !isWorkspaceFile(params.path, ctx.cwd);
       const result = await worker.request<WorkerResult>(
         {
           cwd: ctx.cwd,
-          kind: workspacePath ? "find" : "external-find",
-          query: workspacePath ? query(params.path, params.pattern) : (params.path ?? ctx.cwd),
+          kind: useFff ? "find" : "external-find",
+          query: useFff ? query(params.path, params.pattern, ctx.cwd) : (params.path ?? ctx.cwd),
           limit: limit(params.limit),
         },
         signal ?? new AbortController().signal,
@@ -204,15 +236,16 @@ export default function fff(pi: ExtensionAPI): void {
     parameters: GrepParams,
     async execute(_id, params: GrepInput, signal, _update, ctx) {
       const workspacePath = isWorkspacePath(params.path, ctx.cwd);
+      const useFff = workspacePath && !isWorkspaceFile(params.path, ctx.cwd);
       const result = await worker.request<WorkerGrepResult>(
         {
           cwd: ctx.cwd,
-          kind: workspacePath ? "grep" : "external-grep",
-          query: workspacePath ? query(params.path, params.pattern) : (params.path ?? ctx.cwd),
+          kind: useFff ? "grep" : "external-grep",
+          query: useFff ? query(params.path, params.pattern, ctx.cwd) : (params.path ?? ctx.cwd),
           pattern: params.pattern,
           limit: limit(params.limit),
           context: Math.min(20, Math.max(0, Math.floor(params.context ?? 0))),
-          mode: /[.*+?^${}()|[\]\\]/.test(params.pattern) ? "regex" : "plain",
+          mode: grepMode(params.pattern),
           timeoutMs: timeoutMs(params.timeout),
         },
         signal ?? new AbortController().signal,

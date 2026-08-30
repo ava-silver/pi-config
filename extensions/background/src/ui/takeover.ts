@@ -22,6 +22,8 @@ function statusGlyph(snap: SubagentSnapshot, theme: Theme): string {
   switch (snap.status) {
     case "running":
       return theme.fg("warning", "■");
+    case "paused":
+      return theme.fg("muted", "■");
     case "done":
       return theme.fg("success", "■");
     case "error":

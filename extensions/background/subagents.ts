@@ -28,11 +28,17 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { formatElapsed, latestText, REASONING_EFFORTS, type SubagentSnapshot } from "./src/domain.ts";
+import {
+  formatElapsed,
+  latestText,
+  REASONING_EFFORTS,
+  type PersistedSubagent,
+  type SubagentSnapshot,
+} from "./src/domain.ts";
 import { formatContextUtilization } from "../shared/context-utilization.ts";
 import { registerBackgroundCost, registerTransientSegment } from "../shared/footer-segments.ts";
 import { resolveStandaloneChildProjectTrust } from "../shared/child-session.ts";
-import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
+import { MAX_TRACKED, SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
 import {
   buildSubagentQuestionMessage,
   buildSubagentResultMessage,
@@ -59,6 +65,7 @@ import type { BackgroundHub } from "./src/hub.ts";
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
 const WAIT_OUTPUT_MAX_BYTES = 48 * 1024;
 const WAIT_PER_AGENT_MAX_BYTES = 16 * 1024;
+const SUBAGENT_STATE_ENTRY = "background-subagent-state";
 
 function describeSubagent(snap: SubagentSnapshot) {
   const details = [
@@ -89,24 +96,55 @@ interface SubagentController {
   getManager(): Promise<SubagentManagerShape>;
   getView(): SubagentManagerShape["view"] | undefined;
   consumeResults(ids: string[]): void;
-  start(ctx: ExtensionContext): void;
-  shutdown(): Promise<void>;
+  start(ctx: ExtensionContext): Promise<void>;
+  shutdown(preserve: boolean): Promise<void>;
   flushResults(): void;
 }
 
 function createSubagentController(pi: ExtensionAPI): SubagentController {
+  interface SavedSession {
+    runtime: SubagentRuntime | undefined;
+    managerPromise: Promise<SubagentManagerShape> | undefined;
+    managerView: SubagentManagerShape["view"] | undefined;
+    resultDelivery: ReturnType<typeof createDeferredResultDelivery<SubagentSnapshot>>;
+    persistedSignatures: Map<string, string>;
+  }
+
   let runtime: SubagentRuntime | undefined;
   let managerPromise: Promise<SubagentManagerShape> | undefined;
   let managerView: SubagentManagerShape["view"] | undefined;
   let sessionContext: ExtensionContext | undefined;
+  let sessionId: string | undefined;
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
   let costKey: string | undefined;
-  const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
+  let resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
+  let persistedSignatures = new Map<string, string>();
+  const savedSessions = new Map<string, SavedSession>();
 
   const getRuntime = () => (runtime ??= createSubagentRuntime());
   const updateStatus = (manager: SubagentManagerShape) => {
     const subs = manager.view.list();
+    for (const snap of subs) {
+      if (!sessionContext || !snap.meta.sessionFilePath) continue;
+      const record: PersistedSubagent = {
+        version: 1,
+        id: snap.id,
+        title: snap.title,
+        prompt: snap.prompt,
+        cwd: snap.cwd,
+        status: snap.status,
+        createdAt: snap.createdAt,
+        ...(snap.settledAt === undefined ? {} : { settledAt: snap.settledAt }),
+        ...(snap.errorText === undefined ? {} : { errorText: snap.errorText }),
+        finalText: snap.finalText,
+        meta: snap.meta,
+      };
+      const signature = JSON.stringify(record);
+      if (persistedSignatures.get(snap.id) === signature) continue;
+      persistedSignatures.set(snap.id, signature);
+      pi.appendEntry(SUBAGENT_STATE_ENTRY, record);
+    }
     if (costKey)
       registerBackgroundCost(
         costKey,
@@ -118,10 +156,12 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
       return;
     }
     const running = subs.filter((snap) => snap.status === "running").length;
+    const paused = subs.filter((snap) => snap.status === "paused").length;
     const failed = subs.filter((snap) => snap.status === "error").length;
-    const done = subs.length - running - failed;
+    const done = subs.length - running - paused - failed;
     const parts: string[] = [];
     if (running > 0) parts.push(`${running} running`);
+    if (paused > 0) parts.push(`${paused} paused`);
     if (done > 0) parts.push(`${done} done`);
     if (failed > 0) parts.push(`${failed} failed`);
     const bg = failed > 0 ? "#e78284" : running > 0 ? "#81c8be" : "#a6d189";
@@ -132,6 +172,7 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
     });
   };
   const deliverResult = (snap: SubagentSnapshot) => {
+    if (snap.status === "paused") return;
     pi.sendMessage(
       {
         customType: "subagent-result",
@@ -174,18 +215,17 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
     resultDelivery.defer({ ...snap, meta: { ...snap.meta } });
     if (sessionContext?.isIdle()) flushResults();
   };
+  const connectManager = (manager: SubagentManagerShape) => {
+    manager.view.setOnSettled(onSettled);
+    manager.view.setOnQuestion(deliverQuestion);
+    managerView = manager.view;
+    unsubStatus?.();
+    unsubStatus = manager.view.subscribe(() => updateStatus(manager));
+    updateStatus(manager);
+    return manager;
+  };
   const getManager = () => {
-    managerPromise ??= getRuntime()
-      .runPromise(SubagentManager)
-      .then((manager) => {
-        manager.view.setOnSettled(onSettled);
-        manager.view.setOnQuestion(deliverQuestion);
-        managerView = manager.view;
-        unsubStatus?.();
-        unsubStatus = manager.view.subscribe(() => updateStatus(manager));
-        updateStatus(manager);
-        return manager;
-      });
+    managerPromise ??= getRuntime().runPromise(SubagentManager).then(connectManager);
     return managerPromise;
   };
 
@@ -195,32 +235,85 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
     getView: () => managerView,
     consumeResults: (ids) => resultDelivery.consume(ids),
     flushResults,
-    start(ctx) {
+    async start(ctx) {
       sessionContext = ctx;
-      costKey = `subagents:${ctx.sessionManager.getSessionId()}`;
+      sessionId = ctx.sessionManager.getSessionId();
+      costKey = `subagents:${sessionId}`;
       if (ctx.hasUI) ui = ctx.ui;
+      const saved = savedSessions.get(sessionId);
+      if (saved) {
+        savedSessions.delete(sessionId);
+        runtime = saved.runtime;
+        managerPromise = saved.managerPromise;
+        managerView = saved.managerView;
+        resultDelivery = saved.resultDelivery;
+        persistedSignatures = saved.persistedSignatures;
+        if (managerView && managerPromise) await managerPromise.then(connectManager);
+        return;
+      }
+      const records = new Map<string, PersistedSubagent>();
+      for (const entry of ctx.sessionManager.getBranch()) {
+        if (entry.type !== "custom" || entry.customType !== SUBAGENT_STATE_ENTRY) continue;
+        const record = entry.data as Partial<PersistedSubagent> | undefined;
+        if (record?.version === 1 && typeof record.id === "string" && typeof record.meta?.sessionFilePath === "string")
+          records.set(record.id, record as PersistedSubagent);
+      }
+      if (records.size === 0) return;
+      const manager = await getManager();
+      const tracked = [...records.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_TRACKED);
+      for (const record of tracked) {
+        await runTool(
+          getRuntime(),
+          manager.restore([record], {
+            parentCwd: ctx.cwd,
+            projectTrusted: resolveStandaloneChildProjectTrust({
+              parentCwd: ctx.cwd,
+              childCwd: record.cwd,
+              parentTrusted: ctx.isProjectTrusted(),
+            }),
+            ...(ctx.model ? { inheritedModel: { provider: ctx.model.provider, id: ctx.model.id } } : {}),
+            inheritedThinkingLevel: pi.getThinkingLevel(),
+            modelRegistry: ctx.modelRegistry,
+          }),
+        );
+      }
     },
-    async shutdown() {
+    async shutdown(preserve) {
       sessionContext = undefined;
-      resultDelivery.clear();
+      ui = undefined;
+      managerView?.setOnSettled(undefined);
+      managerView?.setOnQuestion(undefined);
       unsubStatus?.();
       unsubStatus = undefined;
       registerTransientSegment("subagents", null);
-      if (costKey) registerBackgroundCost(costKey, null);
+      if (preserve && sessionId) {
+        savedSessions.set(sessionId, { runtime, managerPromise, managerView, resultDelivery, persistedSignatures });
+      } else {
+        resultDelivery.clear();
+        if (costKey) registerBackgroundCost(costKey, null);
+        await runtime?.dispose();
+        for (const [savedId, saved] of savedSessions) {
+          saved.resultDelivery.clear();
+          registerBackgroundCost(`subagents:${savedId}`, null);
+          await saved.runtime?.dispose();
+        }
+        savedSessions.clear();
+      }
+      sessionId = undefined;
       costKey = undefined;
-      const closing = runtime;
       runtime = undefined;
       managerPromise = undefined;
       managerView = undefined;
-      await closing?.dispose();
+      resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
+      persistedSignatures = new Map();
     },
   };
 }
 
 function registerSubagentLifecycle(pi: ExtensionAPI, background: BackgroundHub, controller: SubagentController) {
   let unregisterProvider: (() => void) | undefined;
-  pi.on("session_start", (_event, ctx) => {
-    controller.start(ctx);
+  pi.on("session_start", async (_event, ctx) => {
+    await controller.start(ctx);
     unregisterProvider?.();
     unregisterProvider = background.registerProvider("subagents", {
       label: "Subagents",
@@ -252,10 +345,10 @@ function registerSubagentLifecycle(pi: ExtensionAPI, background: BackgroundHub, 
     });
   });
   pi.on("agent_settled", () => controller.flushResults());
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (event) => {
     unregisterProvider?.();
     unregisterProvider = undefined;
-    await controller.shutdown();
+    await controller.shutdown(event.reason === "new" || event.reason === "resume" || event.reason === "fork");
   });
 }
 
@@ -414,7 +507,9 @@ function waitResult(manager: SubagentManagerShape, ids: string[]) {
         ? "failed"
         : snap.status === "running"
           ? "is still running"
-          : "finished";
+          : snap.status === "paused"
+            ? "is paused"
+            : "finished";
     let section = `## ${snap.id} "${snap.title}" ${verb}`;
     if (snap.errorText) section += `\nError: ${snap.errorText}`;
     const outputBudget = Math.max(

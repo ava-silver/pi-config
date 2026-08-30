@@ -14,6 +14,8 @@
 import { Context, Effect, Exit, Fiber, Layer, Result, Scope, Stream } from "effect";
 import type {
   LiveToolState,
+  ParentContext,
+  PersistedSubagent,
   RunOutcome,
   SpawnTask,
   SubagentEvent,
@@ -24,7 +26,7 @@ import type {
   SubagentStatus,
   TranscriptItem,
 } from "./domain.ts";
-import { spawnPiSession } from "./backends/pi.ts";
+import { resumePiSession, spawnPiSession } from "./backends/pi.ts";
 import { ConcurrencyLimitError, SendError, SpawnError } from "./domain.ts";
 
 export const MAX_RUNNING = 16;
@@ -108,6 +110,7 @@ export interface CancelResult {
 
 export interface SubagentManagerShape {
   spawn(task: SpawnTask): Effect.Effect<SubagentSnapshot, SpawnError | ConcurrencyLimitError>;
+  restore(records: ReadonlyArray<PersistedSubagent>, parent: ParentContext): Effect.Effect<void>;
   /**
    * Wait until all listed subagents are settled. Unknown ids are treated as
    * settled (the tool layer validates ids first). While waiting, settles for
@@ -132,6 +135,7 @@ export class SubagentManager extends Context.Service<SubagentManager, SubagentMa
 // --- Implementation --------------------------------------------------------------
 
 type SpawnFn = (task: SpawnTask) => Effect.Effect<SubagentSession, SpawnError, Scope.Scope>;
+type ResumeFn = (task: SpawnTask, sessionFilePath: string) => Effect.Effect<SubagentSession, SpawnError, Scope.Scope>;
 type RunDetached = <A, E>(effect: Effect.Effect<A, E, never>) => Fiber.Fiber<A, E>;
 
 interface ManagerState {
@@ -335,6 +339,9 @@ function foldEvent(state: ManagerState, entry: Entry, event: SubagentEvent) {
     case "QuestionClosed":
       snapshot.pendingQuestions = snapshot.pendingQuestions.filter((question) => question.id !== event.questionId);
       break;
+    case "OutputRestored":
+      snapshot.finalText = event.finalText;
+      break;
     case "UsageChanged": {
       const tokens = event.tokens ?? snapshot.usage.tokens;
       const contextWindow = event.contextWindow ?? snapshot.usage.contextWindow;
@@ -425,6 +432,69 @@ function spawn(state: ManagerState, spawnFn: SpawnFn, task: SpawnTask) {
       ),
     );
   });
+}
+
+function restore(
+  state: ManagerState,
+  resumeFn: ResumeFn,
+  records: ReadonlyArray<PersistedSubagent>,
+  parent: ParentContext,
+) {
+  return Effect.forEach(
+    records,
+    (record) => {
+      const sessionFilePath = record.meta.sessionFilePath;
+      if (!sessionFilePath || state.entries.has(record.id)) return Effect.void;
+      const work = Effect.gen(function* () {
+        const scope = yield* Scope.make();
+        const session = yield* Scope.provide(
+          resumeFn(
+            {
+              prompt: record.prompt,
+              title: record.title,
+              cwd: record.cwd,
+              parent,
+            },
+            sessionFilePath,
+          ),
+          scope,
+        ).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
+        const meta = yield* session.meta;
+        const entry: Entry = {
+          snapshot: {
+            id: record.id,
+            title: record.title,
+            prompt: record.prompt,
+            cwd: record.cwd,
+            status: record.status === "running" ? "paused" : record.status,
+            createdAt: record.createdAt,
+            ...(record.settledAt === undefined ? {} : { settledAt: record.settledAt }),
+            ...(record.errorText === undefined ? {} : { errorText: record.errorText }),
+            meta: { ...record.meta, ...meta },
+            usage: meta.contextWindow === undefined ? {} : { contextWindow: meta.contextWindow },
+            cost: 0,
+            transcript: [],
+            liveTools: [],
+            queued: [],
+            pendingQuestions: [],
+            finalText: record.finalText,
+            turns: 0,
+          },
+          session,
+          scope,
+          liveToolMap: new Map(),
+        };
+        state.entries.set(record.id, entry);
+        const numericId = Number.parseInt(record.id.replace(/^sa-/, ""), 10);
+        if (Number.isFinite(numericId)) state.counter = Math.max(state.counter, numericId);
+        const pump = Stream.runForEach(session.events, (event) => Effect.sync(() => foldEvent(state, entry, event)));
+        entry.pump = yield* Scope.provide(Effect.forkScoped(pump), scope);
+        notify(state, record.id);
+      });
+      return work.pipe(Effect.ignore);
+    },
+    { concurrency: "unbounded", discard: true },
+  );
 }
 
 function waitFor(state: ManagerState, ids: ReadonlyArray<string>, onPending?: (pending: string[]) => void) {
@@ -605,7 +675,7 @@ function createView(state: ManagerState): SubagentReadModel {
   };
 }
 
-const makeManager = (spawnFn: SpawnFn) =>
+const makeManager = (spawnFn: SpawnFn, resumeFn: ResumeFn) =>
   Effect.gen(function* () {
     const state = createManagerState(Effect.runForkWith(yield* Effect.context()));
     const view = createView(state);
@@ -614,6 +684,7 @@ const makeManager = (spawnFn: SpawnFn) =>
       Effect.as(
         SubagentManager.of({
           spawn: (task) => spawn(state, spawnFn, task),
+          restore: (records, parent) => restore(state, resumeFn, records, parent),
           waitFor: (ids, onPending) => waitFor(state, ids, onPending),
           cancel: (ids) => cancel(state, ids),
           send: (id, text) => send(state, id, text),
@@ -627,8 +698,11 @@ const makeManager = (spawnFn: SpawnFn) =>
     );
   });
 
-export function makeSubagentManagerLayer(spawnFn: SpawnFn) {
-  return Layer.effect(SubagentManager, makeManager(spawnFn));
+export function makeSubagentManagerLayer(
+  spawnFn: SpawnFn,
+  resumeFn: ResumeFn = () => Effect.fail(new SpawnError({ message: "Restore is unavailable." })),
+) {
+  return Layer.effect(SubagentManager, makeManager(spawnFn, resumeFn));
 }
 
-export const SubagentManagerLive = makeSubagentManagerLayer(spawnPiSession);
+export const SubagentManagerLive = makeSubagentManagerLayer(spawnPiSession, resumePiSession);

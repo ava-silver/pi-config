@@ -14,7 +14,7 @@ import type { Stream } from "effect/Stream";
 export const REASONING_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-export type SubagentStatus = "running" | "done" | "error";
+export type SubagentStatus = "running" | "paused" | "done" | "error";
 
 /** Parent-session context resolved by the tool layer and passed opaquely. */
 export interface ParentContext {
@@ -42,6 +42,20 @@ export interface SubagentMeta {
   readonly contextWindow?: number;
   readonly sessionFilePath?: string;
   readonly nativeSessionId?: string;
+}
+
+export interface PersistedSubagent {
+  readonly version: 1;
+  readonly id: string;
+  readonly title: string;
+  readonly prompt: string;
+  readonly cwd: string;
+  readonly status: SubagentStatus;
+  readonly createdAt: number;
+  readonly settledAt?: number;
+  readonly errorText?: string;
+  readonly finalText: string;
+  readonly meta: SubagentMeta;
 }
 
 // --- Transcript ------------------------------------------------------------
@@ -151,6 +165,7 @@ export type SubagentEvent =
     }
   | { readonly _tag: "QuestionAsked"; readonly question: SubagentQuestion }
   | { readonly _tag: "QuestionClosed"; readonly questionId: string }
+  | { readonly _tag: "OutputRestored"; readonly finalText: string }
   | {
       readonly _tag: "UsageChanged";
       readonly tokens?: number;

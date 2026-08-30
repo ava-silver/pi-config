@@ -15,7 +15,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 export interface BackgroundItem {
   id: string;
   title: string;
-  status: "running" | "done" | "error";
+  status: "running" | "paused" | "done" | "error";
   /** Called on every render tick so elapsed time stays live. */
   elapsed(): string;
   /** Extra strings shown on the right side of the row (model, ctx%, …). */
@@ -138,6 +138,8 @@ function statusGlyph(item: BackgroundItem, theme: Theme): string {
   switch (item.status) {
     case "running":
       return theme.fg("warning", "■");
+    case "paused":
+      return theme.fg("muted", "■");
     case "done":
       return theme.fg("success", "■");
     case "error":
@@ -149,6 +151,8 @@ function statusWord(item: BackgroundItem, theme: Theme): string {
   switch (item.status) {
     case "running":
       return theme.fg("warning", "running");
+    case "paused":
+      return theme.fg("muted", "paused");
     case "done":
       return theme.fg("success", "done");
     case "error":

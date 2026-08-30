@@ -45,7 +45,8 @@ function externalPath(path: string, cwd: string): string {
 }
 
 async function search({ cwd, kind, query, pattern, limit, context, mode, timeoutMs }: Request) {
-  if (kind === "external-find") return searchFilesWithRg(externalPath(query, cwd), limit, cwd);
+  if (mode === "regex") await validateRegex(pattern ?? query, cwd);
+  if (kind === "external-find") return searchFilesWithRg(externalPath(query, cwd), pattern ?? "", limit, cwd);
   if (kind === "external-grep") {
     return searchContentsWithRg({
       pattern: pattern ?? "",
@@ -87,6 +88,10 @@ async function search({ cwd, kind, query, pattern, limit, context, mode, timeout
   };
 }
 
+function validateRegex(pattern: string, cwd: string): Promise<string> {
+  return rg(["--engine", "default", "--regexp", pattern, process.platform === "win32" ? "NUL" : "/dev/null"], cwd);
+}
+
 function rg(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("rg", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
@@ -102,10 +107,35 @@ function rg(args: string[], cwd: string): Promise<string> {
   });
 }
 
-async function searchFilesWithRg(path: string, limit: number, cwd: string) {
+function matchesFilename(path: string, pattern: string): boolean {
+  const lowercasePath = path.toLowerCase();
+  return pattern
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((term) => lowercasePath.includes(term));
+}
+
+async function searchFilesWithRg(path: string, pattern: string, limit: number, cwd: string) {
   const output = await rg(["--files", path], cwd);
-  const items = output ? output.split("\n").slice(0, limit) : [];
-  return { items, resultCount: items.length, totalMatched: items.length, totalFiles: items.length };
+  const matches = (output ? output.split("\n") : []).filter((item) => matchesFilename(item, pattern));
+  const items = matches.slice(0, limit);
+  return { items, resultCount: items.length, totalMatched: matches.length, totalFiles: matches.length };
+}
+
+function grepArgs(pattern: string, mode: GrepMode): string[] {
+  return [...(mode === "plain" ? ["--fixed-strings"] : []), "--", pattern];
+}
+
+function matchCount(output: string): number {
+  return output.split("\n").filter((line) => /^(?:\d+:|.*:\d+:)/.test(line)).length;
+}
+
+function totalMatchCount(output: string): number {
+  return output
+    .split("\n")
+    .filter(Boolean)
+    .reduce((total, line) => total + Number(line), 0);
 }
 
 async function searchContentsWithRg({
@@ -123,23 +153,33 @@ async function searchContentsWithRg({
   mode: GrepMode;
   cwd: string;
 }) {
-  const output = await rg(
-    [
-      "--line-number",
-      "--no-heading",
-      "--color=never",
-      "--max-count",
-      String(limit),
-      ...(context > 0 ? ["--context", String(context)] : []),
-      ...(mode === "plain" ? ["--fixed-strings"] : []),
-      "--",
-      pattern,
-      path,
-    ],
-    cwd,
+  const files = await rg(["--files-with-matches", ...grepArgs(pattern, mode), path], cwd);
+  const matchingFiles = files.split("\n").filter(Boolean);
+  const totalMatched = totalMatchCount(
+    await rg(["--count-matches", "--no-filename", ...grepArgs(pattern, mode), path], cwd),
   );
-  const resultCount = output.split("\n").filter((line) => /^(?:\d+:|.*:\d+:)/.test(line)).length;
-  return { items: [], output, resultCount, totalMatched: resultCount, totalFiles: resultCount };
+  let resultCount = 0;
+  const output: string[] = [];
+  for (const file of matchingFiles) {
+    if (resultCount >= limit) break;
+    const matches = await rg(
+      [
+        "--line-number",
+        "--no-heading",
+        "--with-filename",
+        "--color=never",
+        "--max-count",
+        String(limit - resultCount),
+        ...(context > 0 ? ["--context", String(context)] : []),
+        ...grepArgs(pattern, mode),
+        file,
+      ],
+      cwd,
+    );
+    resultCount += matchCount(matches);
+    if (matches) output.push(matches);
+  }
+  return { items: [], output: output.join("\n"), resultCount, totalMatched, totalFiles: matchingFiles.length };
 }
 
 let buffer = "";

@@ -259,6 +259,7 @@ interface ChildSessionSetup {
   model: Model<any> | undefined;
   thinkingLevel: ThinkingLevel | undefined;
   askParentTool: ReturnType<typeof defineTool>;
+  sessionFilePath?: string;
 }
 
 function createChildSession(setup: ChildSessionSetup) {
@@ -271,7 +272,9 @@ function createChildSession(setup: ChildSessionSetup) {
       });
       const { session } = await createAgentSession({
         cwd: setup.task.cwd,
-        sessionManager: SessionManager.create(setup.task.cwd),
+        sessionManager: setup.sessionFilePath
+          ? SessionManager.open(setup.sessionFilePath, undefined, setup.task.cwd)
+          : SessionManager.create(setup.task.cwd),
         settingsManager,
         resourceLoader: loader,
         ...(setup.model === undefined ? {} : { model: setup.model }),
@@ -506,7 +509,29 @@ function interruptPiSession(session: AgentSession, state: PiSessionState, emit: 
   });
 }
 
-export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, SpawnError, Scope.Scope> =>
+function replayTranscript(session: AgentSession, emit: Emit) {
+  for (const message of session.messages) {
+    const role = messageRole(message);
+    if (role === "user") {
+      const text = userText(message as Message);
+      if (text.trim()) emit({ _tag: "UserMessage", text });
+    } else if (role === "assistant") {
+      const assistant = message as AssistantMessage;
+      const cost = assistant.usage?.cost?.total;
+      emit({
+        _tag: "AssistantMessage",
+        parts: assistantParts(assistant),
+        ...(typeof cost === "number" && Number.isFinite(cost) ? { cost } : {}),
+      });
+    }
+  }
+  emit({ _tag: "OutputRestored", finalText: finalOutput(session) });
+}
+
+const makePiSession = (
+  task: SpawnTask,
+  sessionFilePath?: string,
+): Effect.Effect<SubagentSession, SpawnError, Scope.Scope> =>
   Effect.gen(function* () {
     const registry = task.parent.modelRegistry;
     if (!registry)
@@ -535,6 +560,7 @@ export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, 
       model,
       thinkingLevel,
       askParentTool,
+      ...(sessionFilePath === undefined ? {} : { sessionFilePath }),
     });
     const toolTimeout = createToolCallTimeoutGuard();
     toolTimeout.apply(session);
@@ -549,7 +575,8 @@ export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, 
     yield* Effect.addFinalizer(() => closePiSession({ session, state, pendingAnswers, unsubscribe, events }));
     yield* Effect.try(() => session.sessionManager.appendSessionInfo(`subagent: ${task.title}`)).pipe(Effect.ignore);
     emit({ _tag: "MetaChanged", meta: control.currentMeta() });
-    control.startRun(task.prompt);
+    if (sessionFilePath) replayTranscript(session, emit);
+    else control.startRun(task.prompt);
     return {
       meta: Effect.sync(() => control.currentMeta()),
       events: Stream.fromQueue(events),
@@ -580,3 +607,7 @@ export const spawnPiSession = (task: SpawnTask): Effect.Effect<SubagentSession, 
       interrupt: interruptPiSession(session, state, emit),
     } satisfies SubagentSession;
   });
+
+export const spawnPiSession = (task: SpawnTask) => makePiSession(task);
+
+export const resumePiSession = (task: SpawnTask, sessionFilePath: string) => makePiSession(task, sessionFilePath);
