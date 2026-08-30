@@ -26,6 +26,7 @@ export type ContextAuditInput = {
   activeToolNames: string[];
   tools: ContextTool[];
   contextEntries: SessionEntry[];
+  lastProviderRequest?: unknown;
 };
 
 // chars/4 is a reliable rule-of-thumb for GPT-family tokenizers
@@ -211,6 +212,10 @@ export function contextAuditHtml(input: ContextAuditInput): string {
         )
         .join("")
     : '<p class="empty">None</p>';
+  const providerRequest =
+    input.lastProviderRequest === undefined
+      ? '<p class="empty">No provider request captured in this session.</p>'
+      : details("Full payload", JSON.stringify(input.lastProviderRequest, null, 2));
 
   return `<!doctype html>
 <html lang="en">
@@ -297,16 +302,24 @@ ${skills}
 ${tools}
 <h2>Conversation sent after compaction</h2>
 ${conversation}
+<h2>Most recent provider request</h2>
+${providerRequest}
 <h2>Loaded but not model-visible</h2>
 <div class="item"><strong>Inactive tools: ${inactiveTools.length}</strong><p>${escapeHtml(inactiveTools.map((tool) => tool.name).join(", ") || "None")}</p></div>
 <div class="item"><strong>Manual-only skills: ${manualSkills.length}</strong><p>${escapeHtml(manualSkills.map((skill) => skill.name).join(", ") || "None")}</p></div>
-<p class="notice">Per-turn extensions can alter the system prompt, messages, or provider payload after this command runs. System prompt and tool values use a chars÷4 token estimate. Conversation values use Pi's provider-visible content estimate. Only context usage is provider-reported.</p>
+<p class="notice">The provider request is captured without copying it and rendered only when you run this command. It includes per-turn context observed by this extension, but a later extension can still rewrite the payload. System prompt and tool values use a chars÷4 token estimate. Conversation values use Pi's provider-visible content estimate. Only context usage is provider-reported.</p>
 </main>
 </body>
 </html>`;
 }
 
 export default function contextAuditExtension(pi: ExtensionAPI): void {
+  let lastProviderRequest: unknown;
+
+  pi.on("before_provider_request", (event) => {
+    lastProviderRequest = event.payload;
+  });
+
   pi.registerCommand("context-audit", {
     description: "Open a browser report of everything that can consume model context",
     handler: async (_args, ctx) => {
@@ -318,6 +331,7 @@ export default function contextAuditExtension(pi: ExtensionAPI): void {
         activeToolNames: pi.getActiveTools(),
         tools: pi.getAllTools(),
         contextEntries: ctx.sessionManager.buildContextEntries(),
+        ...(lastProviderRequest === undefined ? {} : { lastProviderRequest }),
       });
       await mkdir(dirname(REPORT_FILE), { recursive: true });
       await writeFile(REPORT_FILE, html, { mode: 0o600 });

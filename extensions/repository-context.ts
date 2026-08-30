@@ -192,34 +192,21 @@ async function loadGitHubVisibility(pi: ExtensionAPI, context: RepositoryContext
   }
 }
 
-async function gitLabCiLocation(pi: ExtensionAPI, repository: string): Promise<CiLocation> {
-  const project = `DataDog/${repository}`;
-  const fallback: CiLocation = {
+function gitLabCiLocation(organization: string, repository: string): CiLocation {
+  const project = `${organization}/${repository}`;
+  return {
     provider: "gitlab",
     project,
     url: `https://${GITLAB_HOST}/${project}`,
   };
-  if (offline()) return fallback;
+}
 
-  const output = await commandOutput(pi, "glab", [
-    "api",
-    "--hostname",
-    GITLAB_HOST,
-    `projects/${encodeURIComponent(project)}`,
-  ]);
-  if (!output) return fallback;
-
-  try {
-    const value = JSON.parse(output) as unknown;
-    if (!isRecord(value)) return fallback;
-    return {
-      provider: "gitlab",
-      project: typeof value.path_with_namespace === "string" ? value.path_with_namespace : fallback.project,
-      url: typeof value.web_url === "string" ? value.web_url : fallback.url,
-    };
-  } catch {
-    return fallback;
-  }
+function hasCanonicalGitLabCi(context: RepositoryContext): boolean {
+  const expected = gitLabCiLocation(context.organization, context.repository);
+  return context.ci.every(
+    (location) =>
+      location.provider !== "gitlab" || (location.project === expected.project && location.url === expected.url),
+  );
 }
 
 async function discoverRepository(
@@ -234,7 +221,7 @@ async function discoverRepository(
   const providers = detectCi(root);
   const ci = await Promise.all(
     providers.map((provider): Promise<CiLocation> => {
-      if (provider === "gitlab") return gitLabCiLocation(pi, context.repository);
+      if (provider === "gitlab") return Promise.resolve(gitLabCiLocation(context.organization, context.repository));
       return Promise.resolve({
         provider: "github",
         project: `${context.organization}/${context.repository}`,
@@ -302,6 +289,7 @@ export default function repositoryContextExtension(pi: ExtensionAPI): void {
       try {
         const metadata = readRepositoryCache(cachePath)[cacheKey];
         context = metadata ? { ...remote.context, ...metadata } : undefined;
+        if (context && !hasCanonicalGitLabCi(context)) context = undefined;
       } catch (error) {
         cacheValid = false;
         if (ctx.hasUI) ctx.ui.notify(`Repository cache is invalid: ${String(error)}`, "warning");
@@ -325,7 +313,10 @@ export default function repositoryContextExtension(pi: ExtensionAPI): void {
       try {
         const metadata = readRepositoryCache(cachePath)[cacheKey];
         const remote = parseRepositoryRemote(cacheKey);
-        if (metadata && remote) context = { ...remote.context, ...metadata };
+        if (metadata && remote) {
+          const cached = { ...remote.context, ...metadata };
+          if (hasCanonicalGitLabCi(cached)) context = cached;
+        }
       } catch {
         // Keep the context loaded at session start until the cache is valid again.
       }

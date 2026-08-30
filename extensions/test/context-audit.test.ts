@@ -39,6 +39,7 @@ test("renders model-visible sources and context visualizations", () => {
       },
     ],
     contextEntries: [messageEntry],
+    lastProviderRequest: { system: "effective repository context" },
   });
 
   assert.match(html, /What uses context/);
@@ -50,6 +51,8 @@ test("renders model-visible sources and context visualizations", () => {
   assert.match(html, />local</);
   assert.doesNotMatch(html, />auto</);
   assert.match(html, /Full prompt/);
+  assert.match(html, /Most recent provider request/);
+  assert.match(html, /effective repository context/);
   assert.match(html, /<span>System prompt<\/span><strong>5 estimated tokens<\/strong>/);
   assert.match(html, /<summary>1\. user<span>2 estimated tokens<\/span><\/summary>/);
   assert.match(html, /chars/);
