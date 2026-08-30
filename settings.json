@@ -12,7 +12,10 @@
     "npm:pi-btw",
     "npm:pi-mcp-adapter",
     "npm:pi-auto-rename",
-    "npm:@ff-labs/pi-fff",
+    {
+      "source": "npm:@ff-labs/pi-fff",
+      "extensions": []
+    },
     "~/go/src/github.com/DataDog/datadog-pi-packages/packages/dd-ai-gateway"
   ],
   "extensions": [
