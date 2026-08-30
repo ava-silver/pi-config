@@ -212,10 +212,10 @@ function createAskParentTool(state: PiSessionState, emit: Emit, pendingAnswers: 
     name: "ask_parent",
     label: "Ask Parent",
     description:
-      "Ask the parent agent for missing context or a decision, then wait for its response. Use this instead of guessing when clarification would materially affect the work.",
-    promptSnippet: "Ask the parent agent for missing context or a decision, then wait for its answer",
+      "Ask the parent agent for clarification, missing context, or a decision, then wait for its response. Use your judgment: resolve meaningful ambiguities rather than guessing.",
+    promptSnippet: "Ask the parent agent for clarification, missing context, or a decision, then wait for its answer",
     promptGuidelines: [
-      "Use ask_parent when missing context or an ambiguous decision blocks reliable progress; continue independent work without asking when possible.",
+      "Ask the parent when clarification, missing context, or a decision could improve the result. Proceed independently for routine details, but prefer resolving meaningful ambiguities over guessing.",
     ],
     parameters: Type.Object({
       question: Type.String({

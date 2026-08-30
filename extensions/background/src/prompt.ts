@@ -2,7 +2,7 @@
 
 /** Describes subagent_spawn. */
 export const SUBAGENT_SPAWN_TOOL_DESCRIPTION =
-  "Spawn a background subagent: a headless pi agent with its own context window. Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. They can ask you for missing context through ask_parent, but the prompt should still include everything they need. Max 16 subagents can run at once.";
+  "Spawn a background subagent: a headless pi agent with its own context window. Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once.";
 
 /** Adds background subagent delegation to the parent model's available-tools prompt. */
 export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
@@ -10,7 +10,7 @@ export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
 
 /** Guides the parent model to delegate standalone tasks and avoid unnecessary blocking waits. */
 export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
-  "Use subagent_spawn to delegate self-contained tasks that can run in the background; give it a complete, standalone prompt.",
+  "Use subagent_spawn to delegate tasks that can run in the background. Give the child enough context to start, and invite it to ask_parent for clarification, decisions, or missing context that could improve the result.",
   "After subagent_spawn, keep working; results arrive automatically. Only call subagent_wait when you cannot proceed without the result.",
   "When a subagent asks a question, answer it with subagent_answer. Use ask_user first only when the answer requires the user's input.",
 ];
@@ -18,7 +18,7 @@ export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
 /** Model-facing schema descriptions for subagent_spawn task and execution options. */
 export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
   prompt:
-    "Task prompt for the subagent. Must be self-contained: include all needed context, file paths, and what to report back.",
+    "Task prompt for the subagent. Include enough context, file paths, and expected output to start; it can ask_parent for clarification or missing context.",
   name: "Short human-readable name for this subagent, shown in listings and the UI",
   workingDir: "Working directory (default: current working directory)",
   model: '"provider/model-id" or bare model id. Omit to inherit the current model.',
