@@ -50,7 +50,7 @@ const C = {
 } as const;
 
 // Thinking level → { bg, fg, label }
-const THINKING: Record<ThinkingLevel, { bg: string; fg: string; label: string }> = {
+const THINKING = {
   off: { bg: C.panelAlt, fg: C.dim, label: "off" },
   minimal: { bg: C.selected, fg: C.muted, label: "min" },
   low: { bg: C.border, fg: C.text, label: "low" },
@@ -58,7 +58,7 @@ const THINKING: Record<ThinkingLevel, { bg: string; fg: string; label: string }>
   high: { bg: C.blue, fg: C.dark, label: "high" },
   xhigh: { bg: C.yellow, fg: C.dark, label: "x-hi" },
   max: { bg: C.red, fg: C.dark, label: "max" },
-};
+} satisfies Record<ThinkingLevel, { bg: string; fg: string; label: string }>;
 
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 function hexToRgb(hex: string): [number, number, number] {
@@ -186,8 +186,13 @@ function formatBranch(branch: string, maxWidth: number): string {
   return tail.slice(0, maxWidth);
 }
 
+interface NumstatTotals {
+  added: number;
+  deleted: number;
+}
+
 /** Parse `git diff --numstat` output into totals. */
-function parseNumstat(output: string): { added: number; deleted: number } {
+function parseNumstat(output: string): NumstatTotals {
   let added = 0;
   let deleted = 0;
   for (const line of output.split("\n")) {
@@ -224,7 +229,12 @@ function formatTokens(tokens: number): string {
 
 type CostEntry = { id?: string; type?: string; message?: { role?: string; usage?: { cost?: { total?: number } } } };
 
-export function activeBranchCost(entries: readonly CostEntry[]): { cost: number; entryIds: Set<string> } {
+interface BranchCostSummary {
+  cost: number;
+  entryIds: Set<string>;
+}
+
+export function activeBranchCost(entries: readonly CostEntry[]): BranchCostSummary {
   let cost = 0;
   const entryIds = new Set<string>();
   for (const entry of entries) {
@@ -243,7 +253,7 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
   let tui: { requestRender: () => void } | null = null;
   let savedCtx: ExtensionContext | null = null;
   let branch: string | null = null;
-  let diff: { added: number; deleted: number } | null = null;
+  let diff: NumstatTotals | null = null;
   let agentStartedAt: number | null = null;
   let agentFinishedAt: number | null = null;
   let sessionCost = 0;

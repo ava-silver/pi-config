@@ -54,14 +54,16 @@ function runsDir(): string {
   return path.join(getAgentDir(), "workflows");
 }
 
-export function createHistoricalRunCache(load: typeof loadRunEntries = loadRunEntries): {
+export interface HistoricalRunCache {
   get(
     active: Map<string, WorkflowDetails>,
     sessionId: string,
     referencedRunIds: ReadonlySet<string>,
     force?: boolean,
   ): Promise<RunEntry[]>;
-} {
+}
+
+export function createHistoricalRunCache(load: typeof loadRunEntries = loadRunEntries): HistoricalRunCache {
   let activeSignature = "";
   let entries: RunEntry[] = [];
   return {
@@ -337,6 +339,11 @@ interface WorkflowDashboardOptions {
   initialRunId?: string | undefined;
 }
 
+interface WindowedResult<T> {
+  items: T[];
+  offset: number;
+}
+
 export class WorkflowDashboard {
   private view: View = "list";
   private entries: RunEntry[] = [];
@@ -607,7 +614,7 @@ export class WorkflowDashboard {
   }
 
   /** Scroll window keeping `selected` visible. */
-  private windowed<T>(items: T[], selected: number, size: number): { items: T[]; offset: number } {
+  private windowed<T>(items: T[], selected: number, size: number): WindowedResult<T> {
     if (items.length <= size) return { items, offset: 0 };
     const offset = Math.max(0, Math.min(selected - Math.floor(size / 2), items.length - size));
     return { items: items.slice(offset, offset + size), offset };

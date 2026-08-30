@@ -74,7 +74,7 @@ function safeJson(value: unknown): string | undefined {
 }
 
 /** The argument key that best summarizes a call for known tool types. */
-const TOOL_SUMMARY_KEY: Record<string, string | null> = {
+const TOOL_SUMMARY_KEY = {
   bash: "command",
   read: "path",
   write: "path",
@@ -92,7 +92,7 @@ const TOOL_SUMMARY_KEY: Record<string, string | null> = {
   workflow: null,
   ask_user: "question",
   ask_parent: "question",
-};
+} satisfies Record<string, string | null>;
 
 /**
  * Human-readable one-line preview of tool arguments. Extracts the most
@@ -103,7 +103,9 @@ function toolCallPreview(toolName: string, args: unknown): string | undefined {
   if (!args || typeof args !== "object") return safeJson(args);
   const obj = args as Record<string, unknown>;
 
-  const key = Object.hasOwn(TOOL_SUMMARY_KEY, toolName) ? TOOL_SUMMARY_KEY[toolName] : undefined;
+  const key = Object.hasOwn(TOOL_SUMMARY_KEY, toolName)
+    ? TOOL_SUMMARY_KEY[toolName as keyof typeof TOOL_SUMMARY_KEY]
+    : undefined;
 
   if (key === null) return undefined; // known, no meaningful args to show
 

@@ -8,6 +8,8 @@ export interface SerializationOptions {
   maxStringBytes?: number;
 }
 
+export type Serializable = string | number | boolean | null | Serializable[] | { [key: string]: Serializable };
+
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 const DEFAULT_MAX_DEPTH = 16;
 const DEFAULT_MAX_NODES = 20_000;
@@ -31,14 +33,14 @@ export function truncateUtf8(value: string, maxBytes: number) {
  * numbers, deep trees, throwing properties, and very large strings are all
  * represented explicitly instead of making artifact persistence fail.
  */
-export function toSerializable(value: unknown, options: SerializationOptions = {}): unknown {
+export function toSerializable(value: unknown, options: SerializationOptions = {}): Serializable {
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   const maxNodes = options.maxNodes ?? DEFAULT_MAX_NODES;
   const maxStringBytes = options.maxStringBytes ?? DEFAULT_MAX_STRING_BYTES;
   const seen = new WeakMap<object, string>();
   let nodes = 0;
 
-  const visit = (current: unknown, depth: number, location: string): unknown => {
+  const visit = (current: unknown, depth: number, location: string): Serializable => {
     nodes++;
     if (nodes > maxNodes) return "[truncated: node limit]";
     if (depth > maxDepth) return "[truncated: depth limit]";
@@ -75,7 +77,7 @@ export function toSerializable(value: unknown, options: SerializationOptions = {
       };
     }
 
-    const result: Record<string, unknown> = Object.create(null);
+    const result: Record<string, Serializable> = Object.create(null);
     let keys: string[];
     try {
       keys = Object.keys(current);

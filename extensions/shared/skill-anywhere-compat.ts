@@ -9,7 +9,10 @@ type CompatibleEditorPrototype = {
 
 /** Add `/` to Pi's private editor trigger list until the public API handles mid-line triggers. */
 export function installMidLineSlashTrigger(): void {
-  const prototype = Editor.prototype as unknown as CompatibleEditorPrototype;
+  // The trigger fields are private on the Editor type but exist at runtime; cast
+  // through an `unknown` binding so we never chain `as unknown as` assertions.
+  const prototypeSource: unknown = Editor.prototype;
+  const prototype = prototypeSource as CompatibleEditorPrototype;
   if (prototype.__skillAnywherePatched) return;
 
   // The wrapper invokes this private method with the active editor receiver.

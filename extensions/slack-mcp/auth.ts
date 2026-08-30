@@ -60,7 +60,12 @@ export function openOptions(signal?: AbortSignal) {
   };
 }
 
-function createPkcePair(): { verifier: string; challenge: string } {
+interface PkcePair {
+  verifier: string;
+  challenge: string;
+}
+
+function createPkcePair(): PkcePair {
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   return { verifier, challenge };

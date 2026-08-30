@@ -3,7 +3,7 @@ repos:
     hooks:
       - id: oxfmt-pi-extensions
         name: oxfmt pi extensions
-        entry: extensions/node_modules/.bin/oxfmt --write
+        entry: extensions/node_modules/.bin/oxfmt --write --no-error-on-unmatched-pattern
         language: system
         files: ^extensions/.*\.(cjs|js|json|jsonc|jsx|mjs|ts|tsx)$
         exclude: ^extensions/package\.json$

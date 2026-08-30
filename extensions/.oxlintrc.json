@@ -1,4 +1,7 @@
 {
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": ["tools/oxlint/**"],
+  "jsPlugins": [{ "name": "anti-slop", "specifier": "./tools/oxlint/rules/index.ts" }],
   "rules": {
     "complexity": ["error", 30],
     "max-depth": ["error", 4],
@@ -6,14 +9,32 @@
     "max-nested-callbacks": ["error", 4],
     "max-params": ["error", 5],
     "max-statements": ["error", 40],
-    "no-control-regex": "off"
+    "no-control-regex": "off",
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-module-mocking": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-reflect-apply": "error",
+    "anti-slop/no-reflect-get": "error",
+    "anti-slop/no-unknown-returns": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    "anti-slop/no-runtime-typeof": ["warn", { "allowInTypeGuards": true }],
+    "anti-slop/no-conditional-empty-object-spread": "warn",
+    "anti-slop/no-shape-in-symbol-names": "warn",
+    "anti-slop/no-unknown-parameters": "off",
+    "anti-slop/require-safety-comment-for-type-assertion": "off",
+    "anti-slop/no-unsafe-dictionary-type": "off"
   },
   "overrides": [
     {
       "files": ["**/*.test.ts"],
       "rules": {
         "typescript/no-floating-promises": "off",
-        "typescript/unbound-method": "off"
+        "typescript/unbound-method": "off",
+        "anti-slop/no-chained-type-assertions": "off",
+        "anti-slop/no-unknown-returns": "off",
+        "anti-slop/no-known-value-widening": "off"
       }
     }
   ]

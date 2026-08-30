@@ -39,6 +39,15 @@ import {
 } from "./prompt.ts";
 import { safeStringify, truncateUtf8 } from "./serialization.ts";
 
+/** A plain JSON-compatible value captured from a structured-output tool call. */
+type StructuredOutputValue =
+  | string
+  | number
+  | boolean
+  | null
+  | StructuredOutputValue[]
+  | { [key: string]: StructuredOutputValue };
+
 const AGENT_OUTPUT_MAX_BYTES = 64 * 1024;
 export const FIRST_RESPONSE_TIMEOUT_MS = 45_000;
 const TRANSCRIPT_ENTRY_MAX_BYTES = 16 * 1024;
@@ -350,7 +359,7 @@ function formatTimeout(timeoutMs: number) {
 
 /** Abort a provider call that opens but never emits its first assistant event. */
 export function createFirstResponseWatchdog(
-  onTimeout: () => Promise<unknown>,
+  onTimeout: () => Promise<void>,
   options: { timeoutMs?: number; model?: string } = {},
 ) {
   const timeoutMs = options.timeoutMs ?? FIRST_RESPONSE_TIMEOUT_MS;
@@ -396,7 +405,7 @@ function isAssistantResponseEvent(event: AgentSessionEvent) {
 interface WorkflowChildAgent {
   session: AgentSession;
   unsubscribeToolTimeout: () => void;
-  structured: () => unknown;
+  structured: () => StructuredOutputValue | undefined;
 }
 
 interface AgentRunState {
@@ -411,13 +420,13 @@ interface AgentRunState {
 }
 
 async function createWorkflowChildAgent(options: RunAgentOptions): Promise<WorkflowChildAgent> {
-  let structured: unknown;
+  let structured: StructuredOutputValue | undefined;
   const customTools =
     options.schema === undefined
       ? undefined
       : [
           makeStructuredOutputTool(options.schema, (value) => {
-            structured = value;
+            structured = value as StructuredOutputValue;
           }),
         ];
   const { session } = await createAgentSession({

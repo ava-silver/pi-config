@@ -179,17 +179,24 @@ class HeaderColor {
 // ─── Vendored: header-config ──────────────────────────────────────────────────
 
 const HEADER_COLOR_KEYS = ["logoGradientBase", "textBase", "textHighlight"] as const;
-type HeaderColorKey = (typeof HEADER_COLOR_KEYS)[number];
-type HeaderColorSettings = Partial<Record<HeaderColorKey, HeaderColor>>;
-type EffectiveHeaderColorSettings = Required<HeaderColorSettings>;
+interface HeaderColorSettings {
+  logoGradientBase?: HeaderColor;
+  textBase?: HeaderColor;
+  textHighlight?: HeaderColor;
+}
+interface EffectiveHeaderColorSettings {
+  logoGradientBase: HeaderColor;
+  textBase: HeaderColor;
+  textHighlight: HeaderColor;
+}
 type ThemeOverride = HeaderColorSettings & { theme: string };
 type StartupHeaderConfig = { general?: HeaderColorSettings; themeOverrides?: ThemeOverride[] };
 
-const DEFAULT_HEADER_COLORS: EffectiveHeaderColorSettings = {
+const DEFAULT_HEADER_COLORS = {
   logoGradientBase: HeaderColor.fromThemeColor("accent"),
   textBase: HeaderColor.fromThemeColor("accent"),
   textHighlight: HeaderColor.fromThemeColor("mdLink"),
-};
+} satisfies EffectiveHeaderColorSettings;
 
 const EMPTY_STARTUP_HEADER_CONFIG: StartupHeaderConfig = {};
 const CONFIGURATION_WARNING = "Failed to load pi-startup-header configuration. Using default colors.";

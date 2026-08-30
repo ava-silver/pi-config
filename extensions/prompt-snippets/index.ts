@@ -21,6 +21,11 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
+interface ViewportResult {
+  out: string[];
+  scroll: number;
+}
+
 interface Snippet {
   /** Filename, e.g. "concise.md" */
   id: string;
@@ -181,12 +186,7 @@ export default function (pi: ExtensionAPI) {
        * plus the clamped scroll position. When `focusRow` is given, scrolls
        * so it stays visible.
        */
-      const viewport = (
-        lines: string[],
-        scroll: number,
-        maxView: number,
-        focusRow?: number,
-      ): { out: string[]; scroll: number } => {
+      const viewport = (lines: string[], scroll: number, maxView: number, focusRow?: number): ViewportResult => {
         const clipped = lines.length > maxView;
         const view = clipped ? Math.max(1, maxView - 2) : maxView;
 

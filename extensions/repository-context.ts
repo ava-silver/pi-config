@@ -79,10 +79,10 @@ export function writeRepositoryContext(
   cachePath = getRepositoryCachePath(),
 ): void {
   const cache = readRepositoryCache(cachePath);
-  const next: RepositoryCache = {
+  const next = {
     ...cache,
     [key]: { visibility: context.visibility, ci: context.ci },
-  };
+  } satisfies RepositoryCache;
   mkdirSync(dirname(cachePath), { recursive: true });
   const temporaryPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });

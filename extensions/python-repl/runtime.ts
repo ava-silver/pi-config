@@ -6,6 +6,15 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { killProcessTree } from "../shared/process-tree.ts";
 
+/** A plain JSON-compatible value returned by the Python REPL runner. */
+type RunnerResponseValue =
+  | string
+  | number
+  | boolean
+  | null
+  | RunnerResponseValue[]
+  | { [key: string]: RunnerResponseValue };
+
 const RUNNER_PATH = fileURLToPath(new URL("runner.py", import.meta.url));
 const COMMAND_OUTPUT_LIMIT = 64 * 1024;
 
@@ -216,13 +225,13 @@ export class PythonRepl {
     action: "execute" | "clear",
     data: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<unknown> {
+  ): Promise<RunnerResponseValue> {
     this.assertOpen();
     this.startRunner();
     const proc = this.proc;
     if (!proc) throw new Error("Python REPL failed to start.");
     const id = this.nextRequestId++;
-    return new Promise((resolve, reject) => {
+    return new Promise<RunnerResponseValue>((resolve, reject) => {
       const abort = () => {
         this.failRunner(new Error("Python execution cancelled; REPL state was cleared."));
       };
@@ -233,7 +242,7 @@ export class PythonRepl {
       }
       const finishResolve = (value: unknown) => {
         signal?.removeEventListener("abort", abort);
-        resolve(value);
+        resolve(value as RunnerResponseValue);
       };
       const finishReject = (error: Error) => {
         signal?.removeEventListener("abort", abort);

@@ -130,7 +130,7 @@ export function resolveChildModel(
 
 interface ChildExtensionRunner {
   hasHandlers(eventType: string): boolean;
-  emit(event: SessionShutdownEvent): Promise<unknown>;
+  emit(event: SessionShutdownEvent): Promise<void>;
 }
 
 export interface DisposableChildSession {

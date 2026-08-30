@@ -214,7 +214,12 @@ function isEmpty(feedback: Feedback): boolean {
 
 // Strips boilerplate that automated reviewers (Codex, etc.) wrap around their
 // actual findings, and pulls out a compact severity badge (e.g. "P2") when present.
-function cleanBody(raw: string): { label: string | null; text: string } {
+interface CleanedBody {
+  label: string | null;
+  text: string;
+}
+
+function cleanBody(raw: string): CleanedBody {
   let body = raw;
 
   // Drop collapsible "About Codex in GitHub" style boilerplate blocks.

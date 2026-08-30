@@ -169,7 +169,12 @@ function outputText(t: Terminal): string {
   return Buffer.concat(t.output).toString();
 }
 
-export function truncateTerminalText(content: string, notice?: string): { text: string; truncated: boolean } {
+interface TerminalTextResult {
+  text: string;
+  truncated: boolean;
+}
+
+export function truncateTerminalText(content: string, notice?: string): TerminalTextResult {
   const suffix = notice ? `\n${notice}` : "";
   const truncation = truncateTail(content, {
     maxBytes: Math.max(0, DEFAULT_MAX_BYTES - Buffer.byteLength(suffix, "utf8")),
@@ -188,7 +193,7 @@ function artifactNotice(t: Terminal): string | undefined {
   return undefined;
 }
 
-function terminalOutput(t: Terminal, maxBytes = DEFAULT_MAX_BYTES): { text: string; truncated: boolean } {
+function terminalOutput(t: Terminal, maxBytes = DEFAULT_MAX_BYTES): TerminalTextResult {
   const artifact = artifactNotice(t);
   const outputNotice =
     t.artifactStatus === "available"

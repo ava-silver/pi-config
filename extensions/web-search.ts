@@ -34,8 +34,8 @@ interface WebAccessModules {
   ) => Promise<{ answer: string; results: SearchResult[]; provider: string }>;
   fetchAllContent: (urls: string[], signal?: AbortSignal) => Promise<FetchedContent[]>;
   generateId: () => string;
-  storeResult: (id: string, data: object) => void;
-  storeFetchedContentResult: (id: string, data: object) => object;
+  storeResult: (id: string, data: Record<string, unknown>) => void;
+  storeFetchedContentResult: (id: string, data: Record<string, unknown>) => Record<string, unknown>;
 }
 
 let webAccessModules: Promise<WebAccessModules> | null = null;

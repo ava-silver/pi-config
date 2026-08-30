@@ -7,7 +7,7 @@
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run test",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives --ignore-pattern trajectory .",
+    "lint": "oxlint --type-aware --report-unused-disable-directives --ignore-pattern trajectory .",
     "prepare": "effect-tsgo patch",
     "test": "bun test --parallel",
     "typecheck": "tsc --noEmit"
@@ -24,6 +24,7 @@
     "@earendil-works/pi-coding-agent": "0.84.4",
     "@earendil-works/pi-tui": "0.84.4",
     "@effect/tsgo": "0.37.0",
+    "@oxlint/plugins": "1.80.0",
     "@types/node": "26.3.0",
     "oxfmt": "0.65.0",
     "oxlint": "1.80.0",

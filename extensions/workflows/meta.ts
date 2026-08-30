@@ -62,11 +62,22 @@ function propertyName(property: Property) {
 }
 
 /**
+ * A plain JSON-compatible value decoded from a workflow metadata literal.
+ */
+type WorkflowLiteralValue =
+  | string
+  | number
+  | boolean
+  | null
+  | WorkflowLiteralValue[]
+  | { [key: string]: WorkflowLiteralValue };
+
+/**
  * Convert an Acorn expression to data without evaluating source. Only plain
  * object/array/primitive literals are accepted. Getters, methods, spreads,
  * computed keys, templates, identifiers, and calls all fail closed.
  */
-function literalValue(node: Expression, depth = 0): unknown {
+function literalValue(node: Expression, depth = 0): WorkflowLiteralValue {
   if (depth > 8) throw new Error("workflow metadata is nested too deeply");
   if (isLiteral(node)) {
     if (
@@ -90,7 +101,7 @@ function literalValue(node: Expression, depth = 0): unknown {
   }
   if (node.type === "ObjectExpression") {
     const objectNode: ObjectExpression = node;
-    const value: Record<string, unknown> = Object.create(null);
+    const value: Record<string, WorkflowLiteralValue> = Object.create(null);
     for (const item of objectNode.properties) {
       if (!isProperty(item)) {
         throw new Error("workflow metadata objects cannot contain spreads");
