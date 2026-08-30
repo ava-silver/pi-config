@@ -38,21 +38,27 @@ interface WebAccessModules {
   storeFetchedContentResult: (id: string, data: object) => object;
 }
 
-const webAccessModules = (async (): Promise<WebAccessModules> => {
-  // Jiti mis-binds transitive Node built-in imports when these TypeScript modules load concurrently.
-  const indexModule = await import(new URL("./node_modules/pi-web-access/index.ts", import.meta.url).href);
-  const searchModule = await import(new URL("./node_modules/pi-web-access/gemini-search.ts", import.meta.url).href);
-  const extractModule = await import(new URL("./node_modules/pi-web-access/extract.ts", import.meta.url).href);
-  const storageModule = await import(new URL("./node_modules/pi-web-access/storage.ts", import.meta.url).href);
-  return {
-    register: indexModule.default,
-    search: searchModule.search,
-    fetchAllContent: extractModule.fetchAllContent,
-    generateId: storageModule.generateId,
-    storeResult: storageModule.storeResult,
-    storeFetchedContentResult: storageModule.storeFetchedContentResult,
-  };
-})();
+let webAccessModules: Promise<WebAccessModules> | null = null;
+function getWebAccess(): Promise<WebAccessModules> {
+  if (!webAccessModules) {
+    // Jiti mis-binds transitive Node built-in imports when these TypeScript modules load concurrently.
+    webAccessModules = (async () => {
+      const indexModule = await import(new URL("./node_modules/pi-web-access/index.ts", import.meta.url).href);
+      const searchModule = await import(new URL("./node_modules/pi-web-access/gemini-search.ts", import.meta.url).href);
+      const extractModule = await import(new URL("./node_modules/pi-web-access/extract.ts", import.meta.url).href);
+      const storageModule = await import(new URL("./node_modules/pi-web-access/storage.ts", import.meta.url).href);
+      return {
+        register: indexModule.default,
+        search: searchModule.search,
+        fetchAllContent: extractModule.fetchAllContent,
+        generateId: storageModule.generateId,
+        storeResult: storageModule.storeResult,
+        storeFetchedContentResult: storageModule.storeFetchedContentResult,
+      };
+    })();
+  }
+  return webAccessModules;
+}
 
 const SearchParams = Type.Object({
   queries: Type.Array(Type.String(), {
@@ -88,8 +94,16 @@ function formatResults(queryData: QueryResultData[], raw: boolean, fetchId?: str
 }
 
 export default async function webSearch(pi: ExtensionAPI) {
-  const webAccess = await webAccessModules;
-  webAccess.register(pi);
+  // Load pi-web-access in the background; don't block startup on it.
+  // Register its extra tools (source_check, fetch_content, etc.) just before the first agent turn.
+  let webAccessRegistered = false;
+  pi.on("session_start", async () => {
+    if (webAccessRegistered) return;
+    webAccessRegistered = true;
+    const webAccess = await getWebAccess();
+    webAccess.register(pi);
+  });
+
   pi.registerTool({
     name: "web_search",
     label: "Web search",
@@ -97,6 +111,7 @@ export default async function webSearch(pi: ExtensionAPI) {
     promptSnippet: "Search the web for current or external information.",
     parameters: SearchParams,
     async execute(_toolCallId, params: SearchInput, signal, _onUpdate, ctx) {
+      const webAccess = await getWebAccess();
       const queries = params.queries.map((query) => query.trim()).filter(Boolean);
       if (queries.length === 0) throw new Error("Provide at least one non-empty query.");
       const responses = await Promise.all(
