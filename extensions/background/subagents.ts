@@ -66,6 +66,22 @@ const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
 const WAIT_OUTPUT_MAX_BYTES = 48 * 1024;
 const WAIT_PER_AGENT_MAX_BYTES = 16 * 1024;
 const SUBAGENT_STATE_ENTRY = "background-subagent-state";
+const SAVED_SESSIONS_KEY: unique symbol = Symbol.for("pi.background-subagents.saved-sessions");
+const RECONNECT_PROMPT =
+  "The parent Pi process interrupted your previous run. Continue the original task from the current session state. Do not repeat work that is already complete.";
+
+interface SavedSession {
+  runtime: SubagentRuntime | undefined;
+  managerPromise: Promise<SubagentManagerShape> | undefined;
+  managerView: SubagentManagerShape["view"] | undefined;
+  resultDelivery: ReturnType<typeof createDeferredResultDelivery<SubagentSnapshot>>;
+  persistedSignatures: Map<string, string>;
+}
+
+function savedSessionRegistry() {
+  const globals = globalThis as typeof globalThis & { [SAVED_SESSIONS_KEY]?: Map<string, SavedSession> };
+  return (globals[SAVED_SESSIONS_KEY] ??= new Map());
+}
 
 function describeSubagent(snap: SubagentSnapshot) {
   const details = [
@@ -102,14 +118,6 @@ interface SubagentController {
 }
 
 function createSubagentController(pi: ExtensionAPI): SubagentController {
-  interface SavedSession {
-    runtime: SubagentRuntime | undefined;
-    managerPromise: Promise<SubagentManagerShape> | undefined;
-    managerView: SubagentManagerShape["view"] | undefined;
-    resultDelivery: ReturnType<typeof createDeferredResultDelivery<SubagentSnapshot>>;
-    persistedSignatures: Map<string, string>;
-  }
-
   let runtime: SubagentRuntime | undefined;
   let managerPromise: Promise<SubagentManagerShape> | undefined;
   let managerView: SubagentManagerShape["view"] | undefined;
@@ -120,7 +128,7 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
   let costKey: string | undefined;
   let resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
   let persistedSignatures = new Map<string, string>();
-  const savedSessions = new Map<string, SavedSession>();
+  const savedSessions = savedSessionRegistry();
 
   const getRuntime = () => (runtime ??= createSubagentRuntime());
   const updateStatus = (manager: SubagentManagerShape) => {
@@ -276,6 +284,8 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
             modelRegistry: ctx.modelRegistry,
           }),
         );
+        if (record.status === "running" && manager.view.get(record.id))
+          await runTool(getRuntime(), manager.send(record.id, RECONNECT_PROMPT));
       }
     },
     async shutdown(preserve) {
@@ -348,7 +358,9 @@ function registerSubagentLifecycle(pi: ExtensionAPI, background: BackgroundHub, 
   pi.on("session_shutdown", async (event) => {
     unregisterProvider?.();
     unregisterProvider = undefined;
-    await controller.shutdown(event.reason === "new" || event.reason === "resume" || event.reason === "fork");
+    await controller.shutdown(
+      event.reason === "reload" || event.reason === "new" || event.reason === "resume" || event.reason === "fork",
+    );
   });
 }
 
