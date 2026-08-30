@@ -178,7 +178,7 @@ export default function fff(pi: ExtensionAPI): void {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const output = result.content.find((item) => item.type === "text")?.text ?? "";
       const resultCount = (result.details as { resultCount?: number }).resultCount ?? 0;
-      text.setText(`${theme.fg("muted", `${resultCount} results · `)}${theme.fg("toolOutput", output)}`);
+      text.setText(`${theme.fg("muted", `${resultCount} results`)}\n${theme.fg("toolOutput", output)}`);
       return text;
     },
   });
@@ -221,7 +221,7 @@ export default function fff(pi: ExtensionAPI): void {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const output = result.content.find((item) => item.type === "text")?.text ?? "";
       const resultCount = (result.details as { resultCount?: number }).resultCount ?? 0;
-      text.setText(theme.fg("toolOutput", output) + theme.fg("muted", ` · ${resultCount} result(s)`));
+      text.setText(`${theme.fg("muted", `${resultCount} results`)}\n${theme.fg("toolOutput", output)}`);
       return text;
     },
   });

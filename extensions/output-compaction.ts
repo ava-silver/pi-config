@@ -36,7 +36,7 @@ interface ToolRow extends ContainerLike {
   args?: unknown;
   expanded?: boolean;
   isPartial?: boolean;
-  result?: { isError?: boolean };
+  result?: { isError?: boolean; details?: unknown };
   callRendererComponent?: ComponentLike;
   contentBox?: ContainerLike;
 }
@@ -92,6 +92,13 @@ type CallSummary = {
   label: string;
   summary: string;
 };
+
+function withResultCount(row: ToolRow, summary: string): string {
+  if (row.toolName !== "fffind" && row.toolName !== "ffgrep") return summary;
+  const count = (row.result?.details as { resultCount?: unknown } | undefined)?.resultCount;
+  if (typeof count !== "number" || !Number.isFinite(count)) return summary;
+  return [summary, `${count} results`].filter(Boolean).join(" · ");
+}
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_RE, "");
@@ -155,14 +162,14 @@ function renderedCallSummary(row: ToolRow, width: number, runtime: Runtime, them
       const summary = [firstSummary, ...continuations].filter(hasVisibleContent).join(theme.fg("muted", " · "));
       return {
         label: heading[1] ?? expected ?? "tool",
-        summary: runtime.truncateToWidth(summary, 400, "…", false),
+        summary: runtime.truncateToWidth(withResultCount(row, summary), 400, "…", false),
       };
     }
   }
 
   return {
     label: row.toolName === "bash" ? "$" : (row.toolName ?? "tool"),
-    summary: compactArgs(row.args, runtime),
+    summary: withResultCount(row, compactArgs(row.args, runtime)),
   };
 }
 
