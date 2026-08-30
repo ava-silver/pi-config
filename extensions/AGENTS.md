@@ -5,6 +5,7 @@
 - Import only from the same extension or `shared/`; communicate across extensions through typed `pi.events` contracts.
 - Add shared code only when at least two extensions use it.
 - Start long-lived resources during `session_start` and stop them idempotently during `session_shutdown`.
+- Defer blocking work (I/O, computation) to `session_start` or later; top-level `await` in extension modules runs synchronously during startup and delays time-to-prompt.
 - Guard terminal components with `ctx.mode === "tui"` and dialogs with `ctx.hasUI`.
 - Pass cancellation signals to async work and set intentional deadlines for external I/O.
 - Truncate custom-tool output to Pi's exported byte and line limits. Save full output to a secure artifact when needed.
