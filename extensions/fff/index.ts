@@ -26,7 +26,7 @@ const GrepParams = Type.Object({
 
 type FindInput = Static<typeof FindParams>;
 type GrepInput = Static<typeof GrepParams>;
-type WorkerResult = { items: string[]; totalMatched: number; totalFiles: number };
+type WorkerResult = { items: string[]; resultCount: number; totalMatched: number; totalFiles: number };
 type WorkerGrepResult = {
   items: Array<{
     relativePath: string;
@@ -37,6 +37,8 @@ type WorkerGrepResult = {
   }>;
   totalMatched: number;
   totalFiles: number;
+  resultCount: number;
+  output?: string;
 };
 type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void };
 
@@ -48,17 +50,26 @@ function timeoutMs(value: number | undefined): number {
   return Math.max(1, Math.floor(value ?? DEFAULT_TIMEOUT_SECONDS)) * 1_000;
 }
 
-function query(path: string | undefined, pattern: string, cwd: string): string {
-  if (!path) return pattern;
-  if (path.startsWith("/") || path.startsWith("~") || path === ".." || path.startsWith("../")) {
-    throw new Error("Search paths must stay within the workspace.");
-  }
+function isWorkspacePath(path: string | undefined, cwd: string): boolean {
+  if (!path || path.startsWith("~")) return !path?.startsWith("~");
   const target = resolve(cwd, path);
-  if (target !== cwd && !target.startsWith(`${cwd}/`)) throw new Error("Search paths must stay within the workspace.");
-  return `${path} ${pattern}`;
+  return target === cwd || target.startsWith(`${cwd}/`);
+}
+
+function query(path: string | undefined, pattern: string): string {
+  if (!path) return pattern;
+  const normalized = path.replace(/^\.\//, "");
+  if (normalized === ".") return pattern;
+  const lastSegment = normalized.split("/").at(-1) ?? "";
+  const constraint =
+    normalized.endsWith("/") || /[*?[{]/.test(normalized) || /\.[a-zA-Z][a-zA-Z0-9]{0,9}$/.test(lastSegment)
+      ? normalized
+      : `${normalized}/`;
+  return `${constraint} ${pattern}`;
 }
 
 function formatGrep(result: WorkerGrepResult): string {
+  if (result.output !== undefined) return result.output || "No matches found";
   if (result.items.length === 0) return "No matches found";
   let previousPath = "";
   const lines: string[] = [];
@@ -147,14 +158,16 @@ export default function fff(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "fffind",
     label: "Find files",
-    description: "Find files in the current workspace. For another repository, use `bash` with `rg --files <path>`.",
+    description:
+      "Preferred workspace file search. Use instead of `find`, `fd`, or `rg --files`. For another repository, use `bash` with `rg --files <path>`.",
     parameters: FindParams,
     async execute(_id, params: FindInput, signal, _update, ctx) {
+      const workspacePath = isWorkspacePath(params.path, ctx.cwd);
       const result = await worker.request<WorkerResult>(
         {
           cwd: ctx.cwd,
-          kind: "find",
-          query: query(params.path, params.pattern, ctx.cwd),
+          kind: workspacePath ? "find" : "external-find",
+          query: workspacePath ? query(params.path, params.pattern) : (params.path ?? ctx.cwd),
           limit: limit(params.limit),
         },
         signal ?? new AbortController().signal,
@@ -162,7 +175,7 @@ export default function fff(pi: ExtensionAPI): void {
       );
       return {
         content: [{ type: "text", text: result.items.join("\n") || "No files found" }],
-        details: { resultCount: result.items.length, totalMatched: result.totalMatched, totalFiles: result.totalFiles },
+        details: { resultCount: result.resultCount, totalMatched: result.totalMatched, totalFiles: result.totalFiles },
       };
     },
     renderCall(args, theme, context) {
@@ -187,14 +200,16 @@ export default function fff(pi: ExtensionAPI): void {
     name: "ffgrep",
     label: "Search files",
     description:
-      "Search file contents in the current workspace. For another repository, use `bash` with `rg <pattern> <path>`.",
+      "Preferred workspace content search. Use instead of `grep` or `rg`: it uses an indexed, isolated worker and per-call timeouts. Scope `path` narrowly when possible. For another repository, use `bash` with `rg <pattern> <path>`.",
     parameters: GrepParams,
     async execute(_id, params: GrepInput, signal, _update, ctx) {
+      const workspacePath = isWorkspacePath(params.path, ctx.cwd);
       const result = await worker.request<WorkerGrepResult>(
         {
           cwd: ctx.cwd,
-          kind: "grep",
-          query: query(params.path, params.pattern, ctx.cwd),
+          kind: workspacePath ? "grep" : "external-grep",
+          query: workspacePath ? query(params.path, params.pattern) : (params.path ?? ctx.cwd),
+          pattern: params.pattern,
           limit: limit(params.limit),
           context: Math.min(20, Math.max(0, Math.floor(params.context ?? 0))),
           mode: /[.*+?^${}()|[\]\\]/.test(params.pattern) ? "regex" : "plain",
@@ -205,7 +220,7 @@ export default function fff(pi: ExtensionAPI): void {
       );
       return {
         content: [{ type: "text", text: formatGrep(result) }],
-        details: { resultCount: result.items.length, totalMatched: result.totalMatched, totalFiles: result.totalFiles },
+        details: { resultCount: result.resultCount, totalMatched: result.totalMatched, totalFiles: result.totalFiles },
       };
     },
     renderCall(args, theme, context) {
