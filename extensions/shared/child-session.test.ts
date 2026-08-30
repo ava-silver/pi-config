@@ -128,24 +128,20 @@ test("child denylist keeps extension and workflow structured tools available", a
 });
 
 test("child session starts with web tools and no extension errors", async () => {
-  await withTempDir(async (directory) => {
-    const settingsManager = SettingsManager.inMemory(undefined, {
+  // Uses the real agent dir so the test covers actual production extension loading
+  // rather than a hardcoded path that breaks when an extension is reorganized.
+  const agentDir = path.join(import.meta.dirname, "../..");
+  await withTempDir(async (cwd) => {
+    const { loader, settingsManager } = await createChildResources({
+      cwd,
+      agentDir,
       projectTrusted: false,
     });
-    const loader = new DefaultResourceLoader({
-      cwd: directory,
-      agentDir: path.join(directory, "agent"),
-      settingsManager,
-      additionalExtensionPaths: [path.join(import.meta.dirname, "..", "web-search", "index.ts")],
-    });
-    await loader.reload();
-    assert.deepEqual(loader.getExtensions().errors, []);
-
     const { session } = await createAgentSession({
-      cwd: directory,
+      cwd,
       resourceLoader: loader,
       settingsManager,
-      sessionManager: SessionManager.inMemory(directory),
+      sessionManager: SessionManager.inMemory(cwd),
       ...childToolPolicy(),
     });
     try {

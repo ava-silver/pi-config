@@ -50,9 +50,9 @@ test("renders model-visible sources and context visualizations", () => {
   assert.match(html, />local</);
   assert.doesNotMatch(html, />auto</);
   assert.match(html, /Full prompt/);
-  assert.match(html, /<span>System prompt<\/span><strong>2 estimated tokens<\/strong>/);
+  assert.match(html, /<span>System prompt<\/span><strong>5 estimated tokens<\/strong>/);
   assert.match(html, /<summary>1\. user<span>2 estimated tokens<\/span><\/summary>/);
-  assert.match(html, /o200k_base/);
+  assert.match(html, /chars/);
   assert.doesNotMatch(html, /JSON character counts/);
 });
 

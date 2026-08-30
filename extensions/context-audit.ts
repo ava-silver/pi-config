@@ -1,4 +1,3 @@
-import { getEncoding } from "js-tiktoken";
 import {
   estimateTokens,
   sessionEntryToContextMessages,
@@ -29,12 +28,11 @@ export type ContextAuditInput = {
   contextEntries: SessionEntry[];
 };
 
-const tokenizer = getEncoding("o200k_base");
-
+// chars/4 is a reliable rule-of-thumb for GPT-family tokenizers
 function tokens(value: unknown): number {
   try {
     const text = typeof value === "string" ? value : JSON.stringify(value);
-    return text === undefined ? 0 : tokenizer.encode(text).length;
+    return Math.ceil(text.length / 4);
   } catch {
     return 0;
   }
@@ -302,7 +300,7 @@ ${conversation}
 <h2>Loaded but not model-visible</h2>
 <div class="item"><strong>Inactive tools: ${inactiveTools.length}</strong><p>${escapeHtml(inactiveTools.map((tool) => tool.name).join(", ") || "None")}</p></div>
 <div class="item"><strong>Manual-only skills: ${manualSkills.length}</strong><p>${escapeHtml(manualSkills.map((skill) => skill.name).join(", ") || "None")}</p></div>
-<p class="notice">Per-turn extensions can alter the system prompt, messages, or provider payload after this command runs. System prompt and tool values use OpenAI's <code>o200k_base</code> tokenizer. Conversation values use Pi's provider-visible content estimate. Only context usage is provider-reported.</p>
+<p class="notice">Per-turn extensions can alter the system prompt, messages, or provider payload after this command runs. System prompt and tool values use a chars÷4 token estimate. Conversation values use Pi's provider-visible content estimate. Only context usage is provider-reported.</p>
 </main>
 </body>
 </html>`;

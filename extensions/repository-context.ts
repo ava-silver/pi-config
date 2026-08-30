@@ -279,42 +279,48 @@ Use GitHub for code and pull request operations. ${authGuidance}${gitLabGuidance
 export default function repositoryContextExtension(pi: ExtensionAPI): void {
   let cacheKey: string | undefined;
   let context: RepositoryContext | undefined;
+  let contextReady: Promise<void> | undefined;
   const cachePath = getRepositoryCachePath();
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", (_event, ctx) => {
     cacheKey = undefined;
     context = undefined;
     if (!ctx.isProjectTrusted()) return;
 
-    const [root, remoteConfig] = await Promise.all([
-      commandOutput(pi, "git", ["-C", ctx.cwd, "rev-parse", "--show-toplevel"]),
-      commandOutput(pi, "git", ["-C", ctx.cwd, "config", "--get-regexp", "^remote\\..*\\.url$"]),
-    ]);
-    const remote = remoteConfig ? selectGitHubRemote(parseGitHubRemotes(remoteConfig)) : undefined;
-    if (!root || !remote) return;
-    cacheKey = remote.key;
+    // Fire off git discovery without blocking the prompt from appearing.
+    // before_agent_start awaits contextReady before injecting the system prompt.
+    contextReady = (async () => {
+      const [root, remoteConfig] = await Promise.all([
+        commandOutput(pi, "git", ["-C", ctx.cwd, "rev-parse", "--show-toplevel"]),
+        commandOutput(pi, "git", ["-C", ctx.cwd, "config", "--get-regexp", "^remote\\..*\\.url$"]),
+      ]);
+      const remote = remoteConfig ? selectGitHubRemote(parseGitHubRemotes(remoteConfig)) : undefined;
+      if (!root || !remote) return;
+      cacheKey = remote.key;
 
-    let cacheValid = true;
-    try {
-      const metadata = readRepositoryCache(cachePath)[cacheKey];
-      context = metadata ? { ...remote.context, ...metadata } : undefined;
-    } catch (error) {
-      cacheValid = false;
-      if (ctx.hasUI) ctx.ui.notify(`Repository cache is invalid: ${String(error)}`, "warning");
-    }
-    if (context) return;
+      let cacheValid = true;
+      try {
+        const metadata = readRepositoryCache(cachePath)[cacheKey];
+        context = metadata ? { ...remote.context, ...metadata } : undefined;
+      } catch (error) {
+        cacheValid = false;
+        if (ctx.hasUI) ctx.ui.notify(`Repository cache is invalid: ${String(error)}`, "warning");
+      }
+      if (context) return;
 
-    const discovered = await discoverRepository(pi, root, remote);
-    context = discovered.context;
-    if (!cacheValid) return;
-    try {
-      writeRepositoryContext(discovered.key, discovered.context, cachePath);
-    } catch (error) {
-      if (ctx.hasUI) ctx.ui.notify(`Could not update repository cache: ${String(error)}`, "warning");
-    }
+      const discovered = await discoverRepository(pi, root, remote);
+      context = discovered.context;
+      if (!cacheValid) return;
+      try {
+        writeRepositoryContext(discovered.key, discovered.context, cachePath);
+      } catch (error) {
+        if (ctx.hasUI) ctx.ui.notify(`Could not update repository cache: ${String(error)}`, "warning");
+      }
+    })();
   });
 
   pi.on("before_agent_start", async (event) => {
+    await contextReady;
     if (cacheKey) {
       try {
         const metadata = readRepositoryCache(cachePath)[cacheKey];
