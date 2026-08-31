@@ -1,5 +1,7 @@
 {
-  "npmCommand": ["bun"],
+  "npmCommand": [
+    "bun"
+  ],
   "warnings": {
     "anthropicExtraUsage": false
   },
@@ -30,6 +32,7 @@
     "dd-ai-gateway/baseten/zai-org/GLM-5.2",
     "openai-codex/gpt-5.6-sol",
     "openai-codex/gpt-5.6-terra",
-    "anthropic/claude-opus-4-8"
+    "anthropic/claude-opus-4-8",
+    "openai-codex/gpt-5.6-luna"
   ]
 }

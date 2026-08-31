@@ -44,6 +44,7 @@ import {
   buildSubagentQuestionMessage,
   buildSubagentResultMessage,
   buildSubagentSpawnResult,
+  buildSubagentSpawnToolDescription,
   SUBAGENT_MESSAGE_PARAMETER_DESCRIPTIONS,
   SUBAGENT_MESSAGE_TOOL_DESCRIPTION,
   SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS,
@@ -54,7 +55,6 @@ import {
   SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS,
   SUBAGENT_SPAWN_PROMPT_GUIDELINES,
   SUBAGENT_SPAWN_PROMPT_SNIPPET,
-  SUBAGENT_SPAWN_TOOL_DESCRIPTION,
   SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS,
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
@@ -366,99 +366,105 @@ function registerSubagentLifecycle(pi: ExtensionAPI, background: BackgroundHub, 
 }
 
 function registerSpawnTool(pi: ExtensionAPI, controller: SubagentController) {
-  pi.registerTool({
-    name: "subagent_spawn",
-    label: "Spawn Subagent",
-    description: SUBAGENT_SPAWN_TOOL_DESCRIPTION,
-    promptSnippet: SUBAGENT_SPAWN_PROMPT_SNIPPET,
-    promptGuidelines: SUBAGENT_SPAWN_PROMPT_GUIDELINES,
-    parameters: Type.Object({
-      prompt: Type.String({
-        description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.prompt,
+  pi.on("session_start", (_event, ctx) => {
+    const modelExamples = [...new Set(ctx.scopedModels.map(({ model }) => `${model.provider}/${model.id}`))].slice(
+      0,
+      8,
+    );
+    pi.registerTool({
+      name: "subagent_spawn",
+      label: "Spawn Subagent",
+      description: buildSubagentSpawnToolDescription(modelExamples),
+      promptSnippet: SUBAGENT_SPAWN_PROMPT_SNIPPET,
+      promptGuidelines: SUBAGENT_SPAWN_PROMPT_GUIDELINES,
+      parameters: Type.Object({
+        prompt: Type.String({
+          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.prompt,
+        }),
+        name: Type.String({
+          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.name,
+        }),
+        working_dir: Type.Optional(
+          Type.String({
+            description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.workingDir,
+          }),
+        ),
+        model: Type.Optional(
+          Type.String({
+            description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.model,
+          }),
+        ),
+        reasoning_effort: Type.Optional(
+          StringEnum(REASONING_EFFORTS, {
+            description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
+          }),
+        ),
       }),
-      name: Type.String({
-        description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.name,
-      }),
-      working_dir: Type.Optional(
-        Type.String({
-          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.workingDir,
-        }),
-      ),
-      model: Type.Optional(
-        Type.String({
-          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.model,
-        }),
-      ),
-      reasoning_effort: Type.Optional(
-        StringEnum(REASONING_EFFORTS, {
-          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
-        }),
-      ),
-    }),
-    renderCall(args, theme) {
-      const lines = [
-        theme.fg("toolTitle", "subagent_spawn") + (args.name ? " " + theme.fg("dim", args.name) : ""),
-        ...(args.prompt ? [theme.fg("text", args.prompt)] : []),
-        ...(args.working_dir ? [theme.fg("muted", `cwd: ${args.working_dir}`)] : []),
-        ...(args.model ? [theme.fg("muted", `model: ${args.model}`)] : []),
-        ...(args.reasoning_effort ? [theme.fg("muted", `effort: ${args.reasoning_effort}`)] : []),
-      ];
-      return new Text(lines.join("\n"), 0, 0);
-    },
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const manager = await controller.getManager();
-      const cwd = path.resolve(ctx.cwd, params.working_dir ?? ".");
-      if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory())
-        throw new Error(`working_dir is not a directory: ${cwd}`);
-      const title = params.name.trim().slice(0, 160) || "subagent";
-      const snap = await runTool(
-        controller.getRuntime(),
-        manager.spawn({
-          prompt: params.prompt,
-          title,
-          cwd,
-          ...(params.model === undefined ? {} : { model: params.model }),
-          ...(params.reasoning_effort === undefined ? {} : { reasoningEffort: params.reasoning_effort }),
-          parent: {
-            parentCwd: ctx.cwd,
-            projectTrusted: resolveStandaloneChildProjectTrust({
+      renderCall(args, theme) {
+        const lines = [
+          theme.fg("toolTitle", "subagent_spawn") + (args.name ? " " + theme.fg("dim", args.name) : ""),
+          ...(args.prompt ? [theme.fg("text", args.prompt)] : []),
+          ...(args.working_dir ? [theme.fg("muted", `cwd: ${args.working_dir}`)] : []),
+          ...(args.model ? [theme.fg("muted", `model: ${args.model}`)] : []),
+          ...(args.reasoning_effort ? [theme.fg("muted", `effort: ${args.reasoning_effort}`)] : []),
+        ];
+        return new Text(lines.join("\n"), 0, 0);
+      },
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const manager = await controller.getManager();
+        const cwd = path.resolve(ctx.cwd, params.working_dir ?? ".");
+        if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory())
+          throw new Error(`working_dir is not a directory: ${cwd}`);
+        const title = params.name.trim().slice(0, 160) || "subagent";
+        const snap = await runTool(
+          controller.getRuntime(),
+          manager.spawn({
+            prompt: params.prompt,
+            title,
+            cwd,
+            ...(params.model === undefined ? {} : { model: params.model }),
+            ...(params.reasoning_effort === undefined ? {} : { reasoningEffort: params.reasoning_effort }),
+            parent: {
               parentCwd: ctx.cwd,
-              childCwd: cwd,
-              parentTrusted: ctx.isProjectTrusted(),
-            }),
-            ...(ctx.model
-              ? {
-                  inheritedModel: {
-                    provider: ctx.model.provider,
-                    id: ctx.model.id,
-                  },
-                }
-              : {}),
-            inheritedThinkingLevel: pi.getThinkingLevel(),
-            modelRegistry: ctx.modelRegistry,
+              projectTrusted: resolveStandaloneChildProjectTrust({
+                parentCwd: ctx.cwd,
+                childCwd: cwd,
+                parentTrusted: ctx.isProjectTrusted(),
+              }),
+              ...(ctx.model
+                ? {
+                    inheritedModel: {
+                      provider: ctx.model.provider,
+                      id: ctx.model.id,
+                    },
+                  }
+                : {}),
+              inheritedThinkingLevel: pi.getThinkingLevel(),
+              modelRegistry: ctx.modelRegistry,
+            },
+          }),
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: buildSubagentSpawnResult({
+                id: snap.id,
+                title: snap.title,
+                modelLabel: snap.meta.modelLabel ?? "?",
+                cwd,
+              }),
+            },
+          ],
+          details: {
+            id: snap.id,
+            title: snap.title,
+            cwd,
+            model: snap.meta.modelLabel,
           },
-        }),
-      );
-      return {
-        content: [
-          {
-            type: "text",
-            text: buildSubagentSpawnResult({
-              id: snap.id,
-              title: snap.title,
-              modelLabel: snap.meta.modelLabel ?? "?",
-              cwd,
-            }),
-          },
-        ],
-        details: {
-          id: snap.id,
-          title: snap.title,
-          cwd,
-          model: snap.meta.modelLabel,
-        },
-      };
-    },
+        };
+      },
+    });
   });
 }
 
@@ -742,8 +748,8 @@ function registerSubagentMessageRenderers(pi: ExtensionAPI) {
 
 export function setupSubagents(pi: ExtensionAPI, background: BackgroundHub) {
   const controller = createSubagentController(pi);
-  registerSubagentLifecycle(pi, background, controller);
   registerSpawnTool(pi, controller);
+  registerSubagentLifecycle(pi, background, controller);
   registerWaitTool(pi, controller);
   registerSimpleSubagentTools(pi, controller);
   registerSubagentMessageRenderers(pi);

@@ -1,7 +1,6 @@
 import { eslintCompatPlugin } from "@oxlint/plugins";
 
 import { noChainedTypeAssertionsRule } from "./src/no-chained-type-assertions.ts";
-import { noConditionalEmptyObjectSpreadRule } from "./src/no-conditional-empty-object-spread.ts";
 import { noKnownValueWideningRule } from "./src/no-known-value-widening.ts";
 import { noModuleMockingRule } from "./src/no-module-mocking.ts";
 import { noObjectParametersRule } from "./src/no-object-parameters.ts";
@@ -21,7 +20,6 @@ const antiSlopPlugin = eslintCompatPlugin({
 	meta: { name: "anti-slop" },
 	rules: {
 		"no-chained-type-assertions": noChainedTypeAssertionsRule,
-		"no-conditional-empty-object-spread": noConditionalEmptyObjectSpreadRule,
 		"no-known-value-widening": noKnownValueWideningRule,
 		"no-module-mocking": noModuleMockingRule,
 		"no-object-parameters": noObjectParametersRule,

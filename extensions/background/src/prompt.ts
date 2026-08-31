@@ -1,8 +1,14 @@
 /** All model-facing strings for the subagents tools. */
 
-/** Describes subagent_spawn. */
-export const SUBAGENT_SPAWN_TOOL_DESCRIPTION =
-  "Spawn a background subagent: a headless pi agent with its own context window. Spawning starts work in the background and returns an id immediately. You can message, inspect, wait for, or cancel the subagent. Its result is delivered automatically when it settles. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once.";
+/** Describes subagent_spawn, including models curated for the parent session. */
+export function buildSubagentSpawnToolDescription(modelExamples: readonly string[]) {
+  const scopedModels =
+    modelExamples.length > 0 ? ` Scoped model examples: ${modelExamples.map((model) => `"${model}"`).join(", ")}.` : "";
+  return (
+    "Spawn a background subagent: a headless pi agent with its own context window. Spawning starts work in the background and returns an id immediately. You can message, inspect, wait for, or cancel the subagent. Its result is delivered automatically when it settles. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once." +
+    scopedModels
+  );
+}
 
 /** Adds background subagent delegation to the parent model's available-tools prompt. */
 export const SUBAGENT_SPAWN_PROMPT_SNIPPET =

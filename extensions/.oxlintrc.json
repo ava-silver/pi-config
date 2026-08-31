@@ -20,7 +20,6 @@
     "anti-slop/no-unknown-type-aliases": "error",
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/no-runtime-typeof": ["warn", { "allowInTypeGuards": true }],
-    "anti-slop/no-conditional-empty-object-spread": "warn",
     "anti-slop/no-shape-in-symbol-names": "warn",
     "anti-slop/no-unknown-parameters": "off",
     "anti-slop/require-safety-comment-for-type-assertion": "off",
