@@ -1,5 +1,5 @@
 /**
- * SubagentManager — owns the registry of running/finished subagents.
+ * SubagentManager -- owns the registry of running/finished subagents.
  *
  * Each subagent is a scoped SubagentSession (spawned by spawnPiSession) plus
  * a pump fiber that folds its normalized event stream into a mutable

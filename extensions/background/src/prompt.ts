@@ -2,7 +2,7 @@
 
 /** Describes subagent_spawn. */
 export const SUBAGENT_SPAWN_TOOL_DESCRIPTION =
-  "Spawn a background subagent: a headless pi agent with its own context window. Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once.";
+  "Spawn a background subagent: a headless pi agent with its own context window. Spawning starts work in the background and returns an id immediately. You can message, inspect, wait for, or cancel the subagent. Its result is delivered automatically when it settles. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once.";
 
 /** Adds background subagent delegation to the parent model's available-tools prompt. */
 export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
@@ -11,7 +11,7 @@ export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
 /** Guides the parent model to delegate standalone tasks and avoid unnecessary blocking waits. */
 export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
   "Use subagent_spawn to delegate tasks that can run in the background. Give the child enough context to start, and invite it to ask_parent for clarification, decisions, or missing context that could improve the result.",
-  "After subagent_spawn, keep working; results arrive automatically. Only call subagent_wait when you cannot proceed without the result.",
+  "After subagent_spawn, keep working; results arrive automatically. Use subagent_message, subagent_check, subagent_wait, or subagent_cancel whenever needed; call subagent_wait when you cannot proceed without the result.",
   "Use subagent_message to steer a subagent or answer its pending question. Use ask_user first only when the answer requires the user's input.",
 ];
 
@@ -76,7 +76,7 @@ export function buildSubagentQuestionMessage(options: { id: string; title: strin
   return (
     `Subagent ${options.id} "${options.title}" asks:\n\n${options.question}\n\n` +
     `Reply with subagent_message({ id: "${options.id}", message: "..." }). ` +
-    "If the answer requires the user's input, ask the user first."
+    "The subagent is blocked until you reply. If the answer requires the user's input, ask the user first."
   );
 }
 

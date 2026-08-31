@@ -1,18 +1,19 @@
 /**
- * Subagents — spawn background pi subagents, each a headless in-process
+ * Subagents -- spawn background pi subagents, each a headless in-process
  * agent session with its own context window.
  *
  * Tools (for the parent LLM):
- * - subagent_spawn: fire-and-forget spawn (prompt, name, working_dir,
- *   model, reasoning_effort). Max 16 running at once.
+ * - subagent_spawn: start work in the background and return an id immediately
+ *   (prompt, name, working_dir, model, reasoning_effort). Max 16 running at once.
  * - subagent_wait: block until the listed subagents settle or ask a question.
  * - subagent_message: answer a pending question or steer/continue a subagent.
  * - subagent_cancel: stop one or more running subagents.
  * - subagent_check: peek at a subagent's status and recent activity.
  * - subagent_list: list all subagents.
  *
- * Unawaited subagents queue their result as a follow-up message when they
- * settle. `/background` opens the shared task picker and takeover view.
+ * Subagent results are delivered automatically when they settle. The parent
+ * can message, inspect, wait for, or cancel them. `/background` opens the
+ * shared task picker and takeover view.
  */
 
 import * as fs from "node:fs";

@@ -3,13 +3,13 @@
  * cancel them.
  *
  * Tools (for the parent LLM):
- * - background_shell_run: fire-and-forget command spawn (command, title, working_dir).
+ * - background_shell_run: start a long-running command in the background and return an id immediately (command, title, working_dir).
  * - background_shell_cancel: kill one or more background shells.
  * - background_shell_check: peek at status and recent output.
  * - background_shell_list: list all background shells.
  *
- * Unawaited shells queue their output as a follow-up message when they
- * settle. `/background` opens the shared task picker.
+ * Shell output is delivered automatically when the command settles. The parent
+ * can inspect or cancel it. `/background` opens the shared task picker.
  */
 
 import * as child_process from "node:child_process";

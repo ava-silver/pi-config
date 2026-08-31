@@ -1,5 +1,5 @@
 /**
- * pi backend — real implementation over the pi SDK.
+ * pi backend -- real implementation over the pi SDK.
  *
  * Each subagent is an in-process `AgentSession` (a port of v1
  * subagents/manager.ts + shared/child-session.ts):
