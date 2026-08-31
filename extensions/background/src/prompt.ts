@@ -12,7 +12,7 @@ export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
 export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
   "Use subagent_spawn to delegate tasks that can run in the background. Give the child enough context to start, and invite it to ask_parent for clarification, decisions, or missing context that could improve the result.",
   "After subagent_spawn, keep working; results arrive automatically. Only call subagent_wait when you cannot proceed without the result.",
-  "When a subagent asks a question, answer it with subagent_answer. Use ask_user first only when the answer requires the user's input.",
+  "Use subagent_message to steer a subagent or answer its pending question. Use ask_user first only when the answer requires the user's input.",
 ];
 
 /** Model-facing schema descriptions for subagent_spawn task and execution options. */
@@ -64,18 +64,18 @@ export const SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS = {
 /** Describes listing all tracked running and settled subagents. */
 export const SUBAGENT_LIST_TOOL_DESCRIPTION = "List all subagents (running and finished) with their status.";
 
-export const SUBAGENT_ANSWER_TOOL_DESCRIPTION =
-  "Answer the oldest pending question from a subagent. The answer is delivered directly to the child's blocked ask_parent call so it can continue its current run.";
+export const SUBAGENT_MESSAGE_TOOL_DESCRIPTION =
+  "Send a message to a subagent. If it has a pending question, the message answers that question. Otherwise, it steers the current run or continues the settled session.";
 
-export const SUBAGENT_ANSWER_PARAMETER_DESCRIPTIONS = {
-  id: "Subagent id that asked the question",
-  answer: "Direct answer with the context or decision the subagent needs",
+export const SUBAGENT_MESSAGE_PARAMETER_DESCRIPTIONS = {
+  id: "Subagent id",
+  message: "Answer, context, correction, or additional instruction for the subagent",
 };
 
 export function buildSubagentQuestionMessage(options: { id: string; title: string; question: string }) {
   return (
     `Subagent ${options.id} "${options.title}" asks:\n\n${options.question}\n\n` +
-    `Answer with subagent_answer({ id: "${options.id}", answer: "..." }). ` +
+    `Reply with subagent_message({ id: "${options.id}", message: "..." }). ` +
     "If the answer requires the user's input, ask the user first."
   );
 }

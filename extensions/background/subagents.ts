@@ -6,7 +6,7 @@
  * - subagent_spawn: fire-and-forget spawn (prompt, name, working_dir,
  *   model, reasoning_effort). Max 16 running at once.
  * - subagent_wait: block until the listed subagents settle or ask a question.
- * - subagent_answer: answer a subagent's pending question.
+ * - subagent_message: answer a pending question or steer/continue a subagent.
  * - subagent_cancel: stop one or more running subagents.
  * - subagent_check: peek at a subagent's status and recent activity.
  * - subagent_list: list all subagents.
@@ -43,8 +43,8 @@ import {
   buildSubagentQuestionMessage,
   buildSubagentResultMessage,
   buildSubagentSpawnResult,
-  SUBAGENT_ANSWER_PARAMETER_DESCRIPTIONS,
-  SUBAGENT_ANSWER_TOOL_DESCRIPTION,
+  SUBAGENT_MESSAGE_PARAMETER_DESCRIPTIONS,
+  SUBAGENT_MESSAGE_TOOL_DESCRIPTION,
   SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS,
   SUBAGENT_CANCEL_TOOL_DESCRIPTION,
   SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS,
@@ -529,7 +529,7 @@ function waitResult(manager: SubagentManagerShape, ids: string[]) {
       Math.min(WAIT_PER_AGENT_MAX_BYTES, remainingBytes - Buffer.byteLength(section, "utf8") - 2),
     );
     section += question
-      ? `\n\nQuestion: ${question.text}\n\nAnswer with subagent_answer({ id: "${snap.id}", answer: "..." }).`
+      ? `\n\nQuestion: ${question.text}\n\nReply with subagent_message({ id: "${snap.id}", message: "..." }).`
       : `\n\n${truncatedOutput(snap, outputBudget)}`;
     const sectionBytes = Buffer.byteLength(section, "utf8");
     if (sectionBytes > remainingBytes) {
@@ -559,34 +559,32 @@ function waitResult(manager: SubagentManagerShape, ids: string[]) {
 
 function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentController) {
   pi.registerTool({
-    name: "subagent_answer",
-    label: "Answer Subagent",
-    description: SUBAGENT_ANSWER_TOOL_DESCRIPTION,
+    name: "subagent_message",
+    label: "Message Subagent",
+    description: SUBAGENT_MESSAGE_TOOL_DESCRIPTION,
     parameters: Type.Object({
       id: Type.String({
-        description: SUBAGENT_ANSWER_PARAMETER_DESCRIPTIONS.id,
+        description: SUBAGENT_MESSAGE_PARAMETER_DESCRIPTIONS.id,
       }),
-      answer: Type.String({
-        description: SUBAGENT_ANSWER_PARAMETER_DESCRIPTIONS.answer,
+      message: Type.String({
+        description: SUBAGENT_MESSAGE_PARAMETER_DESCRIPTIONS.message,
       }),
     }),
     renderCall(args, theme) {
-      const header = theme.fg("toolTitle", "subagent_answer") + (args.id ? " " + theme.fg("dim", String(args.id)) : "");
-      return new Text([header, ...(args.answer ? [theme.fg("text", args.answer)] : [])].join("\n"), 0, 0);
+      const header =
+        theme.fg("toolTitle", "subagent_message") + (args.id ? " " + theme.fg("dim", String(args.id)) : "");
+      return new Text([header, ...(args.message ? [theme.fg("text", args.message)] : [])].join("\n"), 0, 0);
     },
     async execute(_toolCallId, params) {
       const manager = await controller.getManager();
-      const answer = params.answer.trim();
-      if (!answer) throw new Error("Provide a non-empty answer.");
-      const question = await runTool(controller.getRuntime(), manager.answer(params.id, answer));
+      const message = params.message.trim();
+      if (!message) throw new Error("Provide a non-empty message.");
+      const result = await runTool(controller.getRuntime(), manager.message(params.id, message));
+      const text =
+        result.kind === "answered" ? `Answered ${params.id}: ${result.question.text}` : `Sent message to ${params.id}.`;
       return {
-        content: [{ type: "text", text: `Answered ${params.id}: ${question.text}` }],
-        details: {
-          id: params.id,
-          questionId: question.id,
-          question: question.text,
-          answer,
-        },
+        content: [{ type: "text", text }],
+        details: { id: params.id, action: result.kind, message },
       };
     },
   });

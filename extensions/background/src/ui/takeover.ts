@@ -93,8 +93,7 @@ class TakeoverView implements Component, Focusable {
       const text = value.trim();
       if (!text) return;
       this.input.setValue("");
-      if ((this.snap()?.pendingQuestions.length ?? 0) > 0) this.view.requestAnswer(this.id, text);
-      else this.view.requestSend(this.id, text);
+      this.view.requestMessage(this.id, text);
       this.scrollOffset = 0;
       this.tui.requestRender();
     };

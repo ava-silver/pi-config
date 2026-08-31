@@ -84,10 +84,8 @@ export interface SubagentReadModel {
   subscribe(listener: () => void): () => void;
   /** Per-subagent notification (takeover view). */
   subscribeTo(id: string, listener: () => void): () => void;
-  /** Fire-and-forget: steer/continue a subagent (takeover input). */
-  requestSend(id: string, text: string): void;
-  /** Fire-and-forget: answer the oldest pending question (takeover input). */
-  requestAnswer(id: string, text: string): void;
+  /** Fire-and-forget: answer a pending question or steer/continue a subagent. */
+  requestMessage(id: string, text: string): void;
   /** Fire-and-forget: abort a running subagent (dashboard `x`, takeover). */
   requestAbort(id: string): void;
   /**
@@ -108,6 +106,10 @@ export interface CancelResult {
   readonly cancelled: boolean;
 }
 
+export type SubagentMessageResult =
+  | { readonly kind: "answered"; readonly question: SubagentQuestion }
+  | { readonly kind: "sent" };
+
 export interface SubagentManagerShape {
   spawn(task: SpawnTask): Effect.Effect<SubagentSnapshot, SpawnError | ConcurrencyLimitError>;
   restore(records: ReadonlyArray<PersistedSubagent>, parent: ParentContext): Effect.Effect<void>;
@@ -120,6 +122,7 @@ export interface SubagentManagerShape {
   waitFor(ids: ReadonlyArray<string>, onPending?: (pending: string[]) => void): Effect.Effect<void>;
   /** Cancel running subagents; resolves when they have settled. */
   cancel(ids: ReadonlyArray<string>): Effect.Effect<ReadonlyArray<CancelResult>>;
+  message(id: string, text: string): Effect.Effect<SubagentMessageResult, SendError>;
   send(id: string, text: string): Effect.Effect<void, SendError>;
   answer(id: string, text: string): Effect.Effect<SubagentQuestion, SendError>;
   get(id: string): Effect.Effect<SubagentSnapshot | undefined>;
@@ -596,13 +599,12 @@ function send(state: ManagerState, id: string, text: string) {
   });
 }
 
-function answer(state: ManagerState, id: string, text: string) {
+function answerQuestion(state: ManagerState, id: string, question: SubagentQuestion, text: string) {
   return Effect.suspend((): Effect.Effect<SubagentQuestion, SendError> => {
     const entry = state.entries.get(id);
-    const question = entry?.snapshot.pendingQuestions[0];
-    if (!entry || !question || state.disposed)
+    if (!entry || !entry.snapshot.pendingQuestions.some((pending) => pending.id === question.id) || state.disposed)
       return new SendError({
-        message: `Subagent "${id}" has no pending question.`,
+        message: `Question "${question.id}" from subagent "${id}" is no longer pending.`,
       });
     return entry.session.answer(question.id, text).pipe(
       Effect.tap(() =>
@@ -615,6 +617,26 @@ function answer(state: ManagerState, id: string, text: string) {
       ),
       Effect.as(question),
     );
+  });
+}
+
+function answer(state: ManagerState, id: string, text: string) {
+  return Effect.suspend((): Effect.Effect<SubagentQuestion, SendError> => {
+    const question = state.entries.get(id)?.snapshot.pendingQuestions[0];
+    return question
+      ? answerQuestion(state, id, question, text)
+      : new SendError({ message: `Subagent "${id}" has no pending question.` });
+  });
+}
+
+function message(state: ManagerState, id: string, text: string) {
+  return Effect.suspend((): Effect.Effect<SubagentMessageResult, SendError> => {
+    const question = state.entries.get(id)?.snapshot.pendingQuestions[0];
+    return question
+      ? answerQuestion(state, id, question, text).pipe(
+          Effect.map((answered) => ({ kind: "answered" as const, question: answered })),
+        )
+      : send(state, id, text).pipe(Effect.as({ kind: "sent" as const }));
   });
 }
 
@@ -656,11 +678,8 @@ function createView(state: ManagerState): SubagentReadModel {
         if (set.size === 0) state.idListeners.delete(id);
       };
     },
-    requestSend: (id, text) => {
-      state.runDetached(send(state, id, text).pipe(Effect.ignore));
-    },
-    requestAnswer: (id, text) => {
-      state.runDetached(answer(state, id, text).pipe(Effect.ignore));
+    requestMessage: (id, text) => {
+      state.runDetached(message(state, id, text).pipe(Effect.ignore));
     },
     requestAbort: (id) => {
       const entry = state.entries.get(id);
@@ -687,6 +706,7 @@ const makeManager = (spawnFn: SpawnFn, resumeFn: ResumeFn) =>
           restore: (records, parent) => restore(state, resumeFn, records, parent),
           waitFor: (ids, onPending) => waitFor(state, ids, onPending),
           cancel: (ids) => cancel(state, ids),
+          message: (id, text) => message(state, id, text),
           send: (id, text) => send(state, id, text),
           answer: (id, text) => answer(state, id, text),
           get: (id) => Effect.sync(() => state.entries.get(id)?.snapshot),
