@@ -197,6 +197,8 @@ export interface SubagentSnapshot {
   readonly cwd: string;
   readonly status: SubagentStatus;
   readonly createdAt: number;
+  /** Timestamp of the most recent child event, for progress checks. */
+  readonly lastActivityAt: number;
   readonly settledAt?: number;
   readonly errorText?: string;
   readonly meta: SubagentMeta;

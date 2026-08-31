@@ -48,6 +48,7 @@ interface MutableSnapshot {
   cwd: string;
   status: SubagentStatus;
   createdAt: number;
+  lastActivityAt: number;
   settledAt?: number;
   errorText?: string;
   meta: SubagentMeta;
@@ -94,7 +95,9 @@ export interface SubagentReadModel {
    * delivered as a follow-up message).
    */
   setOnSettled(hook: ((snap: SubagentSnapshot, consumed: boolean) => void) | undefined): void;
-  setOnQuestion(hook: ((snap: SubagentSnapshot, question: SubagentQuestion) => void) | undefined): void;
+  setOnQuestion(
+    hook: ((snap: SubagentSnapshot, question: SubagentQuestion, consumed: boolean) => void) | undefined,
+  ): void;
 }
 
 // --- Service --------------------------------------------------------------------
@@ -153,7 +156,7 @@ interface ManagerState {
   reserved: number;
   disposed: boolean;
   onSettled: ((snap: SubagentSnapshot, consumed: boolean) => void) | undefined;
-  onQuestion: ((snap: SubagentSnapshot, question: SubagentQuestion) => void) | undefined;
+  onQuestion: ((snap: SubagentSnapshot, question: SubagentQuestion, consumed: boolean) => void) | undefined;
 }
 
 function createManagerState(runDetached: RunDetached): ManagerState {
@@ -273,6 +276,7 @@ function settle(state: ManagerState, entry: Entry, outcome: RunOutcome) {
 
 function foldEvent(state: ManagerState, entry: Entry, event: SubagentEvent) {
   const snapshot = entry.snapshot;
+  snapshot.lastActivityAt = Date.now();
   switch (event._tag) {
     case "RunStarted":
       entry.restarting = false;
@@ -336,7 +340,7 @@ function foldEvent(state: ManagerState, entry: Entry, event: SubagentEvent) {
     case "QuestionAsked":
       snapshot.pendingQuestions.push(event.question);
       try {
-        state.onQuestion?.(snapshot, event.question);
+        state.onQuestion?.(snapshot, event.question, (state.waitInterest.get(snapshot.id) ?? 0) > 0);
       } catch {}
       break;
     case "QuestionClosed":
@@ -396,6 +400,7 @@ function spawn(state: ManagerState, spawnFn: SpawnFn, task: SpawnTask) {
           cwd: task.cwd,
           status: "running",
           createdAt: Date.now(),
+          lastActivityAt: Date.now(),
           meta,
           usage: meta.contextWindow === undefined ? {} : { contextWindow: meta.contextWindow },
           cost: 0,
@@ -471,6 +476,7 @@ function restore(
             cwd: record.cwd,
             status: record.status === "running" ? "paused" : record.status,
             createdAt: record.createdAt,
+            lastActivityAt: record.settledAt ?? record.createdAt,
             ...(record.settledAt === undefined ? {} : { settledAt: record.settledAt }),
             ...(record.errorText === undefined ? {} : { errorText: record.errorText }),
             meta: { ...record.meta, ...meta },
@@ -589,10 +595,20 @@ function send(state: ManagerState, id: string, text: string) {
         message: `Max ${MAX_RUNNING} subagents can run concurrently; restarting "${id}" would exceed that.`,
       });
     entry.restarting = true;
+    entry.snapshot.status = "running";
+    delete entry.snapshot.settledAt;
+    delete entry.snapshot.errorText;
+    entry.snapshot.lastActivityAt = Date.now();
+    notify(state, id);
     return entry.session.send(text).pipe(
       Effect.onError(() =>
         Effect.sync(() => {
           entry.restarting = false;
+          entry.snapshot.status = "error";
+          entry.snapshot.errorText = "Could not restart subagent";
+          entry.snapshot.settledAt = Date.now();
+          entry.snapshot.lastActivityAt = Date.now();
+          notify(state, id);
         }),
       ),
     );

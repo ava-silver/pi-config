@@ -17,6 +17,7 @@ export const CHILD_EXCLUDED_TOOL_NAMES = [
   "subagent_spawn",
   "subagent_wait",
   "subagent_answer",
+  "subagent_message",
   "subagent_cancel",
   "subagent_check",
   "subagent_list",

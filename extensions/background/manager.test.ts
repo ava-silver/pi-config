@@ -141,10 +141,10 @@ test("idle restarts respect the concurrency cap", async () => {
   });
 });
 
-test("a subagent can ask the parent and continue with its answer", async () => {
+test("a wait returns a question without a duplicate automatic delivery", async () => {
   await withManager(async (manager, runtime) => {
-    const questions: string[] = [];
-    manager.view.setOnQuestion((_snap, question) => questions.push(question.text));
+    const questions: Array<{ text: string; consumed: boolean }> = [];
+    manager.view.setOnQuestion((_snap, question, consumed) => questions.push({ text: question.text, consumed }));
 
     const snap = await runTool(runtime, manager.spawn(task("ASK: Which API should I use?")));
     await runTool(runtime, manager.waitFor([snap.id]));
@@ -155,10 +155,11 @@ test("a subagent can ask the parent and continue with its answer", async () => {
       waiting?.pendingQuestions.map((question) => question.text),
       ["Which API should I use?"],
     );
-    assert.deepEqual(questions, ["Which API should I use?"]);
+    assert.deepEqual(questions, [{ text: "Which API should I use?", consumed: true }]);
 
-    const answered = await runTool(runtime, manager.answer(snap.id, "Use the SDK API."));
-    assert.equal(answered.text, "Which API should I use?");
+    const answered = await runTool(runtime, manager.message(snap.id, "Use the SDK API."));
+    assert.equal(answered.kind, "answered");
+    if (answered.kind === "answered") assert.equal(answered.question.text, "Which API should I use?");
     await runTool(runtime, manager.waitFor([snap.id]));
 
     const done = manager.view.get(snap.id);
@@ -168,19 +169,18 @@ test("a subagent can ask the parent and continue with its answer", async () => {
   });
 });
 
-test("send steers an idle subagent into another turn", async () => {
+test("messaging a settled subagent reactivates it immediately", async () => {
   await withManager(async (manager, runtime) => {
     const snap = await runTool(runtime, manager.spawn(task("First turn")));
     await runTool(runtime, manager.waitFor([snap.id]));
     assert.equal(manager.view.get(snap.id)?.status, "done");
 
     await runTool(runtime, manager.send(snap.id, "Second turn"));
-    while (manager.view.get(snap.id)?.status !== "running") {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    assert.equal(manager.view.get(snap.id)?.status, "running");
     await runTool(runtime, manager.waitFor([snap.id]));
     const afterSecond = manager.view.get(snap.id);
     assert.equal(afterSecond?.status, "done");
     assert.match(afterSecond?.finalText ?? "", /Second turn/);
+    assert.ok(afterSecond?.lastActivityAt);
   });
 });

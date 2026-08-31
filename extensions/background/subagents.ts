@@ -201,7 +201,12 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
   const flushResults = () => {
     for (const snap of resultDelivery.drain()) deliverResult(snap);
   };
-  const deliverQuestion = (snap: SubagentSnapshot, question: SubagentSnapshot["pendingQuestions"][number]) => {
+  const deliverQuestion = (
+    snap: SubagentSnapshot,
+    question: SubagentSnapshot["pendingQuestions"][number],
+    consumed: boolean,
+  ) => {
+    if (consumed) return;
     pi.sendMessage(
       {
         customType: "subagent-question",
@@ -657,8 +662,12 @@ function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentContr
         const known = manager.view.list().map((s) => s.id);
         throw new Error(`Unknown subagent id "${params.id}". Known: ${known.join(", ") || "none"}.`);
       }
-      let text = `${describeSubagent(snap)}\nTurns: ${snap.turns}`;
+      let text = `${describeSubagent(snap)}\nTurns: ${snap.turns}\nLast activity: ${new Date(snap.lastActivityAt).toISOString()}`;
       if (snap.errorText) text += `\nError: ${snap.errorText}`;
+      const liveTool = snap.liveTools.at(-1);
+      if (liveTool)
+        text += `\nCurrent activity: ${liveTool.name}${liveTool.argsPreview ? ` -- ${liveTool.argsPreview}` : ""}`;
+      else if (snap.queued.length > 0) text += "\nCurrent activity: processing queued parent message";
       const question = snap.pendingQuestions[0];
       if (question) text += `\nPending question: ${question.text}`;
       const output = latestText(snap);
@@ -669,7 +678,13 @@ function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentContr
       } else if (snap.status === "running") text += "\n\n(no text output yet)";
       return {
         content: [{ type: "text", text }],
-        details: { id: snap.id, status: snap.status, turns: snap.turns },
+        details: {
+          id: snap.id,
+          status: snap.status,
+          turns: snap.turns,
+          lastActivityAt: snap.lastActivityAt,
+          ...(liveTool === undefined ? {} : { currentActivity: liveTool.name }),
+        },
       };
     },
   });

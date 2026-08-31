@@ -42,7 +42,7 @@ export function buildSubagentSpawnResult(options: { id: string; title: string; m
 
 /** Describes explicit blocking collection of one or more subagent results. */
 export const SUBAGENT_WAIT_TOOL_DESCRIPTION =
-  "Block until all listed subagents have settled or need an answer. Returns final outputs and any pending questions. Prefer automatic delivery; use this only when you need a result before continuing.";
+  "Block until all listed subagents settle or ask a parent question. Returns the interrupting question or final output for each child. Cancelling this wait leaves children running. Prefer automatic delivery; use this only when you need a result before continuing.";
 
 /** Model-facing schema description for the subagent ids to await. */
 export const SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS = {
@@ -60,7 +60,7 @@ export const SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS = {
 
 /** Describes nonblocking inspection of a subagent without consuming its result. */
 export const SUBAGENT_CHECK_TOOL_DESCRIPTION =
-  "Peek at a subagent's status and recent activity without blocking. Does not consume its result.";
+  "Peek at a subagent's status, current activity, and latest progress without blocking. Does not consume its result.";
 
 /** Model-facing schema description for the subagent id to inspect. */
 export const SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS = {
@@ -71,7 +71,7 @@ export const SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS = {
 export const SUBAGENT_LIST_TOOL_DESCRIPTION = "List all subagents (running and finished) with their status.";
 
 export const SUBAGENT_MESSAGE_TOOL_DESCRIPTION =
-  "Send a message to a subagent. If it has a pending question, the message answers that question. Otherwise, it steers the current run or continues the settled session.";
+  "Send a message to a subagent. If it has a pending question, the message answers it. Otherwise, it steers the current run or reactivates a settled child into a new run. Reactivation keeps the child's on-disk transcript while it remains tracked (up to 64 children per parent session).";
 
 export const SUBAGENT_MESSAGE_PARAMETER_DESCRIPTIONS = {
   id: "Subagent id",

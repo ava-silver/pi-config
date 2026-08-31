@@ -100,6 +100,7 @@ test("child denylist keeps extension and workflow structured tools available", a
         "subagent_spawn",
         "subagent_wait",
         "subagent_answer",
+        "subagent_message",
         "subagent_cancel",
         "subagent_check",
         "subagent_list",
