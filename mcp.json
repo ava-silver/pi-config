@@ -1,25 +1,10 @@
 {
   "mcpServers": {
-    "datadog-prod": {
-      "auth": "oauth",
-      "url": "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=metrics,logs,monitors,dashboards"
-    },
-    "datadog-staging": {
-      "auth": "oauth",
-      "url": "https://mcp.datad0g.com/api/unstable/mcp-server/mcp?toolsets=metrics,logs,monitors,dashboards"
-    },
     "slack": {
       "args": [
         "/Users/ava.silver/.pi/agent/extensions/slack-mcp/proxy.ts"
       ],
       "command": "bun"
-    },
-    "trajectory": {
-      "args": [
-        "mcp"
-      ],
-      "command": "/Users/ava.silver/.pi/agent/extensions/trajectory/bin/trajectory",
-      "lifecycle": "lazy"
     }
   }
 }
