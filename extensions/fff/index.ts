@@ -18,10 +18,11 @@ const FindParams = Type.Object({
 });
 
 const GrepParams = Type.Object({
-  pattern: Type.String({ description: "Text or regular expression in the current workspace." }),
+  pattern: Type.String({ description: "Literal text to search for in the current workspace." }),
   path: Type.Optional(Type.String({ description: "Relative workspace directory or glob." })),
   context: Type.Optional(Type.Number({ description: "Context lines (0-20)." })),
   limit: Type.Number({ description: "Maximum matches." }),
+  regex: Type.Optional(Type.Boolean({ description: "Treat pattern as a regular expression (default false)." })),
   timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (default 30)." })),
 });
 
@@ -47,10 +48,6 @@ function limit(value: number): number {
 
 function timeoutMs(value: number | undefined): number {
   return Math.max(1, Math.floor(value ?? DEFAULT_TIMEOUT_SECONDS)) * 1_000;
-}
-
-function grepMode(pattern: string): "plain" | "regex" {
-  return /[.*+?^${}()|[\]\\]/.test(pattern) ? "regex" : "plain";
 }
 
 function isWorkspacePath(path: string | undefined, cwd: string): boolean {
@@ -232,7 +229,7 @@ export default function fff(pi: ExtensionAPI): void {
     name: "ffgrep",
     label: "Search files",
     description:
-      "Preferred workspace content search. Use instead of `grep` or `rg`: it uses an indexed, isolated worker and per-call timeouts. Scope `path` narrowly when possible. For another repository, use `bash` with `rg <pattern> <path>`.",
+      "Preferred workspace content search. Searches literal text by default; set `regex` to true for regular expressions. Use instead of `grep` or `rg`: it uses an indexed, isolated worker and per-call timeouts. Scope `path` narrowly when possible. For another repository, use `bash` with `rg <pattern> <path>`.",
     parameters: GrepParams,
     async execute(_id, params: GrepInput, signal, _update, ctx) {
       const workspacePath = isWorkspacePath(params.path, ctx.cwd);
@@ -245,7 +242,7 @@ export default function fff(pi: ExtensionAPI): void {
           pattern: params.pattern,
           limit: limit(params.limit),
           context: Math.min(20, Math.max(0, Math.floor(params.context ?? 0))),
-          mode: grepMode(params.pattern),
+          mode: params.regex ? "regex" : "plain",
           timeoutMs: timeoutMs(params.timeout),
         },
         signal ?? new AbortController().signal,
@@ -261,7 +258,7 @@ export default function fff(pi: ExtensionAPI): void {
       const scope = args.path ?? ".";
       const timeout = args.timeout ?? DEFAULT_TIMEOUT_SECONDS;
       text.setText(
-        `${theme.fg("toolTitle", theme.bold("ffgrep"))} ${theme.fg("accent", `/${args.pattern}/`)}${theme.fg("toolOutput", ` in ${scope} · limit ${args.limit} · timeout ${timeout}s`)}`,
+        `${theme.fg("toolTitle", theme.bold("ffgrep"))} ${theme.fg("accent", args.regex ? `/${args.pattern}/` : args.pattern)}${theme.fg("toolOutput", ` in ${scope} · limit ${args.limit} · timeout ${timeout}s`)}`,
       );
       return text;
     },
