@@ -25,7 +25,7 @@ git clone <repository-url> ~/.pi/agent
 
 Copy only the runtime state you want to retain from the backup. Do not commit credentials or session data.
 
-The setup script installs extension dependencies and links `mcp.json` to `~/.config/mcp/mcp.json`.
+The setup script installs extension dependencies.
 
 ## Add tracked files
 

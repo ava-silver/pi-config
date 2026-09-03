@@ -23,7 +23,7 @@
 | `session-secret-redaction/` | Redacts detected secrets from Pi session files. |
 | `shell.ts` | Runs shell commands with zsh aliases and escalating cancellation. |
 | `skill-anywhere.ts` | Enables skill autocomplete and invocation anywhere in a prompt. |
-| `slack-mcp/` | Piggybacks off of the Claude slack connector to give Pi access to the Slack MCP server. |
+| `slack-mcp/` | Searches Slack, reads channels, threads, and files, and creates message drafts. |
 | `spend.ts` | Records session costs and shows spend graphs. |
 | `workflows/` | Provides model-authored, multi-agent workflow orchestration. |
 | `yeet.ts` | Stages, commits, and pushes repository changes through the git workflow. |

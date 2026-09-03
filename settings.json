@@ -12,7 +12,6 @@
   "hideThinkingBlock": false,
   "packages": [
     "npm:pi-btw",
-    "npm:pi-mcp-adapter",
     "npm:pi-auto-rename",
     "~/go/src/github.com/DataDog/datadog-pi-packages/packages/dd-ai-gateway"
   ],

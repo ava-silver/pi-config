@@ -5,7 +5,6 @@
 !/.pre-commit-config.yaml
 !/AGENTS.md
 !/keybindings.json
-!/mcp.json
 !/models.json
 !/pi-auto-rename.json
 !/README.md
