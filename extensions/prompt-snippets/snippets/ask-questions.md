@@ -5,4 +5,4 @@ placement: append
 order: 10
 ---
 
-Ask any clarifying questions you may have and reach a shared understanding before starting.
+Ask any clarifying questions you may have.

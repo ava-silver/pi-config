@@ -5,4 +5,4 @@ placement: prepend
 order: 30
 ---
 
-This is a pure high-level orchestrator session. Outsource mechanical work — file exploration, code reading, implementation — to subagents. Keep your own context window lean so your reasoning stays sharp; do not bloat it by reading code yourself.
+Keep your own context window lean so your reasoning stays sharp, use subagents to outsource mechanical work where possible, but check their work before trusting it.
