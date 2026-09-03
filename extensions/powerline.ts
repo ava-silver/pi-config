@@ -154,17 +154,13 @@ function renderBar(left: Seg[], right: Seg[], width: number): string {
 
 // ── Data helpers ─────────────────────────────────────────────────────────────
 
-const MODEL_SHORT: [string, string][] = [
-  ["sonnet", "sonnet"],
-  ["opus", "opus"],
-  ["sol", "sol"],
-  ["terra", "terra"],
-  ["deepseek", "ds4f"],
-];
+const MODEL_SHORT: [string, string][] = [["deepseek", "ds4f"]];
 
 /** "spotify/claude-opus-4-6@default" → "sonnet" (or short alias) */
 function formatModelName(id: string): string {
   const base = (id.split("/").pop()?.split("@")[0] ?? id).toLowerCase();
+  if (base.includes("claude")) return base.split("-")[1] ?? base;
+  if (base.includes("gpt")) return base.split("-")[2] ?? base;
   return MODEL_SHORT.find(([needle]) => base.includes(needle))?.[1] ?? base;
 }
 
@@ -227,7 +223,11 @@ function formatTokens(tokens: number): string {
   return `${Math.round(tokens / 1_000_000)}M`;
 }
 
-type CostEntry = { id?: string; type?: string; message?: { role?: string; usage?: { cost?: { total?: number } } } };
+type CostEntry = {
+  id?: string;
+  type?: string;
+  message?: { role?: string; usage?: { cost?: { total?: number } } };
+};
 
 interface BranchCostSummary {
   cost: number;
@@ -268,8 +268,12 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
   async function refreshGitState(ctx: ExtensionContext): Promise<void> {
     const id = ++refreshId;
     const [branchResult, diffResult] = await Promise.all([
-      pi.exec("git", ["-C", ctx.cwd, "branch", "--show-current"], { timeout: 5_000 }),
-      pi.exec("git", ["-C", ctx.cwd, "diff", "HEAD", "--numstat", "--"], { timeout: 5_000 }),
+      pi.exec("git", ["-C", ctx.cwd, "branch", "--show-current"], {
+        timeout: 5_000,
+      }),
+      pi.exec("git", ["-C", ctx.cwd, "diff", "HEAD", "--numstat", "--"], {
+        timeout: 5_000,
+      }),
     ]);
     if (id !== refreshId) return;
     branch = branchResult.code === 0 ? branchResult.stdout.trim() || null : null;
