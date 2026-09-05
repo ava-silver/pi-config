@@ -1,6 +1,7 @@
 # North Star: my attention is precious, so be concise
 
 - In all interactions, be extremely concise. When presenting information, skip any unnecessary details and focus on the key points/next steps. I will ask for clarification if I need it.
+- Apply Google developer documentation style to every user-facing response. Address the reader as "you." Use active voice, present tense, standard American English, and concise, direct language. Write for a global audience. Avoid jargon, slang, idioms, hype, and unnecessary detail. Use sentence case, serial commas, descriptive links, code font for code, and bold for literal UI elements.
 
 ## General Behavior
 

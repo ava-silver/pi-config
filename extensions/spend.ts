@@ -662,7 +662,10 @@ export function createSpendStore({
 export default function spendExtension(pi: ExtensionAPI): void {
   const store = createSpendStore();
 
-  pi.on("session_start", store.importSessions);
+  pi.on("session_start", () => {
+    // Session history can be large. Import it after the prompt is interactive.
+    void store.importSessions();
+  });
 
   pi.on("message_end", async (event, ctx) => {
     if (event.message.role !== "assistant" && event.message.role !== "toolResult") return;

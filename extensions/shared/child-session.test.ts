@@ -173,7 +173,7 @@ test("resource loading gates project extensions but retains global extensions", 
       }
     `;
     await writeFile(path.join(agentDir, "extensions", "global.ts"), extensionSource("global_fixture"));
-    await writeFile(path.join(agentDir, "extensions", "google-style.ts"), extensionSource("google_style_fixture"));
+    await writeFile(path.join(agentDir, "extensions", "excluded.ts"), extensionSource("excluded_fixture"));
     await writeFile(path.join(cwd, ".pi", "extensions", "project.ts"), extensionSource("project_fixture"));
 
     const untrusted = await createChildResources({
@@ -187,17 +187,17 @@ test("resource loading gates project extensions but retains global extensions", 
     assert.equal(untrustedTools.includes("global_fixture"), true);
     assert.equal(untrustedTools.includes("project_fixture"), false);
 
-    const withoutGoogleStyle = await createChildResources({
+    const withoutExcluded = await createChildResources({
       cwd,
       agentDir,
       projectTrusted: true,
-      excludedExtensionBasenames: ["google-style.ts"],
+      excludedExtensionBasenames: ["excluded.ts"],
     });
-    const excludedTools = withoutGoogleStyle.loader
+    const excludedTools = withoutExcluded.loader
       .getExtensions()
       .extensions.flatMap((extension) => [...extension.tools.keys()]);
     assert.equal(excludedTools.includes("global_fixture"), true);
-    assert.equal(excludedTools.includes("google_style_fixture"), false);
+    assert.equal(excludedTools.includes("excluded_fixture"), false);
 
     const trusted = await createChildResources({
       cwd,

@@ -328,8 +328,10 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
 
 function registerSubagentLifecycle(pi: ExtensionAPI, background: BackgroundHub, controller: SubagentController) {
   let unregisterProvider: (() => void) | undefined;
-  pi.on("session_start", async (_event, ctx) => {
-    await controller.start(ctx);
+  pi.on("session_start", (_event, ctx) => {
+    // Restoring saved subagents can create and bind several child sessions.
+    // Register the provider immediately and restore them after input is live.
+    void controller.start(ctx);
     unregisterProvider?.();
     unregisterProvider = background.registerProvider("subagents", {
       label: "Subagents",

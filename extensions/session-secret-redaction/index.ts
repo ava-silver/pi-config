@@ -59,7 +59,7 @@ async function ensureKingfisher(pi: ExtensionAPI): Promise<void> {
     // Report the missing provisioned dependency below.
   }
 
-  throw new Error("Kingfisher is not installed. Run Brew bundle or ./setup.sh.");
+  throw new Error("Kingfisher is not installed.");
 }
 
 async function redactSession(pi: ExtensionAPI, ctx: ExtensionContext): Promise<number> {
@@ -128,7 +128,14 @@ export default function sessionSecretRedaction(pi: ExtensionAPI): void {
     return pending;
   }
 
-  pi.on("session_start", async (_event, ctx) => run(ctx));
+  pi.on("session_start", (_event, ctx) => {
+    // Scanning can take up to 70 seconds. It must not delay the interactive prompt.
+    if (ctx.mode === "tui") {
+      void run(ctx);
+      return;
+    }
+    return run(ctx);
+  });
   pi.on("agent_settled", async (_event, ctx) => run(ctx));
   pi.on("session_shutdown", async (_event, ctx) => run(ctx));
 }

@@ -97,11 +97,22 @@ export default async function webSearch(pi: ExtensionAPI) {
   // Load pi-web-access in the background; don't block startup on it.
   // Register its extra tools (source_check, fetch_content, etc.) just before the first agent turn.
   let webAccessRegistered = false;
-  pi.on("session_start", async () => {
+  pi.on("session_start", (_event, ctx) => {
     if (webAccessRegistered) return;
     webAccessRegistered = true;
-    const webAccess = await getWebAccess();
-    webAccess.register(pi);
+    const loading = getWebAccess().then((webAccess) => webAccess.register(pi));
+    if (ctx.mode === "tui") {
+      // Loading the optional web-access package can take several seconds. Do
+      // not make the interactive prompt wait for it; web_search still loads it
+      // on first use.
+      void loading.catch(() => {
+        webAccessRegistered = false;
+      });
+      return;
+    }
+    return loading.catch(() => {
+      webAccessRegistered = false;
+    });
   });
 
   pi.registerTool({

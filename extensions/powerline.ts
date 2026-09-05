@@ -402,17 +402,17 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
     tui?.requestRender();
   });
 
-  pi.on("tool_execution_end", async (event, ctx) => {
+  pi.on("tool_execution_end", (event, ctx) => {
     if (ctx.mode !== "tui" || !MUTATING_TOOLS.has(event.toolName)) return;
-    await refreshGitState(ctx);
+    void refreshGitState(ctx);
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
     agentFinishedAt = Date.now();
     agentStartedAt = null;
     tui?.requestRender();
-    await refreshGitState(ctx);
+    void refreshGitState(ctx);
   });
 
   pi.on("model_select", (event, _ctx) => {

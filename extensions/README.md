@@ -11,12 +11,12 @@
 | `web-search/`           | Provides a compact wrapper around configured web search.                                 |
 | `continue.ts`           | Adds `Ctrl+N` to send or queue `continue`.                                               |
 | `custom-header.ts`      | Renders a custom Pi startup header.                                                      |
-| `google-style.ts`       | Applies Google developer documentation style to agent responses.                         |
 | `key-handlers.ts`       | Adds editor shortcuts for undoing deletes, copying prompts, and escalating cancellation. |
 | `output-compaction.ts`  | Compacts completed tool output in the TUI.                                               |
 | `powerline.ts`          | Replaces the default footer with a Powerline-style status bar.                           |
 | `pr-feedback.ts`        | Fetches pull request feedback and asks the agent to assess it.                           |
 | `repository-context.ts` | Adds cached GitHub repository and GitHub Actions or GitLab CI metadata to the prompt.    |
+| `ui-performance.ts`     | Records event-loop stalls of at least one second to `~/.pi/agent/ui-blocking.jsonl`.     |
 
 | `python-repl/` | Runs stateful Python in a temporary virtual environment. |
 | `read-aloud/` | Rewrites and reads the latest response aloud. |

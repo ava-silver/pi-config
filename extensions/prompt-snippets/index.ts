@@ -299,6 +299,18 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     enabled = new Set();
+    if (ctx.mode === "tui") {
+      snippets = [];
+      updateWidget(ctx, snippets, enabled);
+      // Snippet discovery reads every configured file synchronously. Defer it
+      // until the interactive session has completed its initial bind.
+      setTimeout(() => {
+        snippets = loadSnippets();
+        if (!existsSync(snippetsDir)) mkdirSync(snippetsDir, { recursive: true });
+        updateWidget(ctx, snippets, enabled);
+      }, 0);
+      return;
+    }
     snippets = loadSnippets();
     if (!existsSync(snippetsDir)) mkdirSync(snippetsDir, { recursive: true });
     updateWidget(ctx, snippets, enabled);

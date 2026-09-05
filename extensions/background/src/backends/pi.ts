@@ -268,7 +268,6 @@ function createChildSession(setup: ChildSessionSetup) {
       const { loader, settingsManager } = await createChildResources({
         cwd: setup.task.cwd,
         projectTrusted: setup.task.parent.projectTrusted,
-        excludedExtensionBasenames: ["google-style.ts"],
       });
       const { session } = await createAgentSession({
         cwd: setup.task.cwd,

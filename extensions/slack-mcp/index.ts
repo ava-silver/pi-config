@@ -5,7 +5,7 @@ import { authenticate } from "./auth.ts";
 import { callSlackTool, resolveChannel } from "./client.ts";
 
 const AUTH_REQUIRED_MESSAGE = "This opens Slack in your browser. Approve the connection to let Pi use Slack.";
-const SEARCH_LIMIT = 10;
+const SEARCH_LIMIT = 20;
 const READ_CHANNEL_LIMIT = 50;
 
 const SearchParams = Type.Object({
@@ -78,7 +78,7 @@ export default function slackExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "slack_auth",
     label: "Authenticate Slack",
-    description: "Connect Slack. Opens a browser for the user to approve access.",
+    description: "Reconnect Slack after another Slack tool reports that authentication is required.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, signal, onUpdate, ctx) {
       onUpdate?.(text("Waiting for Slack authorization…"));
@@ -92,8 +92,7 @@ export default function slackExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "slack_search",
     label: "Search Slack",
-    description:
-      "Search messages and files across every Slack conversation the user can access. Returns at most 10 results.",
+    description: `Search messages and files across every Slack conversation the user can access. Returns at most ${SEARCH_LIMIT} results.`,
     parameters: SearchParams,
     async execute(_toolCallId, params, signal) {
       return text(
@@ -109,7 +108,7 @@ export default function slackExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "slack_read_channel",
     label: "Read Slack channel",
-    description: "Read recent messages from a Slack channel. Returns at most 50 messages.",
+    description: `Read recent messages from a Slack channel. Returns at most ${READ_CHANNEL_LIMIT} messages.`,
     parameters: ReadChannelParams,
     async execute(_toolCallId, params, signal) {
       const channelId = await resolveChannel(params.channel, signal);

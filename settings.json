@@ -5,7 +5,7 @@
   "warnings": {
     "anthropicExtraUsage": false
   },
-  "lastChangelogVersion": "0.84.4",
+  "lastChangelogVersion": "0.85.0",
   "theme": "catppuccin-frappe",
   "defaultThinkingLevel": "medium",
   "quietStartup": true,
@@ -17,7 +17,8 @@
   ],
   "extensions": [
     "-extensions/workflows/index.ts",
-    "-extensions/trajectory/index.ts"
+    "-extensions/trajectory/index.ts",
+    "-extensions/ui-performance.ts"
   ],
   "skills": [
     "~/skills/skills",
@@ -32,6 +33,6 @@
     "openai-codex/gpt-5.6-terra",
     "anthropic/claude-opus-4-8",
     "openai-codex/gpt-5.6-luna",
-    "baseten/baseten/zai-org/GLM-5.3-Flash"
+    "google/gemini-3.8-flash"
   ]
 }

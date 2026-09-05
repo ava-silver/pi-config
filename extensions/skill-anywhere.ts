@@ -149,8 +149,14 @@ export default function (pi: ExtensionAPI): void {
 
   installMidLineSlashTrigger();
 
-  pi.on("session_start", async (_event, ctx) => {
-    refresh(ctx.cwd, ctx.isProjectTrusted());
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx.mode === "tui") {
+      // Skill discovery walks configured trees synchronously. Defer it until
+      // the interactive session has completed its initial bind.
+      setTimeout(() => refresh(ctx.cwd, ctx.isProjectTrusted()), 0);
+    } else {
+      refresh(ctx.cwd, ctx.isProjectTrusted());
+    }
     ctx.ui.addAutocompleteProvider((current) => createSkillAutocompleteProvider(current, () => skillMap));
   });
 

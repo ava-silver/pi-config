@@ -439,20 +439,27 @@ function buildHeader(width: number, theme: Theme, config: StartupHeaderConfig): 
 // ─── Extension ────────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
 
     let config = EMPTY_STARTUP_HEADER_CONFIG;
-    try {
-      config = await loadStartupHeaderConfig(join(getAgentDir(), CONFIG_FILE_NAME));
-    } catch {
-      ctx.ui.notify(CONFIGURATION_WARNING, "warning");
-    }
-
     ctx.ui.setHeader((_tui, theme) => ({
       render: (width: number): string[] => buildHeader(width, theme, config),
       invalidate() {},
     }));
+
+    // Header configuration is cosmetic and must not delay input setup.
+    void loadStartupHeaderConfig(join(getAgentDir(), CONFIG_FILE_NAME))
+      .then((loaded) => {
+        config = loaded;
+        ctx.ui.setHeader((_tui, theme) => ({
+          render: (width: number): string[] => buildHeader(width, theme, config),
+          invalidate() {},
+        }));
+      })
+      .catch(() => {
+        ctx.ui.notify(CONFIGURATION_WARNING, "warning");
+      });
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
