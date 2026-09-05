@@ -44,6 +44,7 @@ function getWebAccess(): Promise<WebAccessModules> {
     // Jiti mis-binds transitive Node built-in imports when these TypeScript modules load concurrently.
     webAccessModules = (async () => {
       const indexModule = await import(new URL("./node_modules/pi-web-access/index.ts", import.meta.url).href);
+      // gemini-search.ts is the multi-provider search router (named after Gemini, its original backend)
       const searchModule = await import(new URL("./node_modules/pi-web-access/gemini-search.ts", import.meta.url).href);
       const extractModule = await import(new URL("./node_modules/pi-web-access/extract.ts", import.meta.url).href);
       const storageModule = await import(new URL("./node_modules/pi-web-access/storage.ts", import.meta.url).href);
