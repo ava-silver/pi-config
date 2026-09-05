@@ -134,6 +134,24 @@ function removeExpandHint(text: string, runtime: Runtime): string {
   return runtime.sliceByColumn(text, 0, runtime.visibleWidth(plain.slice(0, match.index))).trimEnd();
 }
 
+export function restoreExpandKeyHint(
+  text: string,
+  width: number,
+  runtime: Pick<Runtime, "sliceByColumn" | "truncateToWidth" | "visibleWidth">,
+): string {
+  const plain = stripAnsi(text);
+  if (!plain.includes("to expand") || /ctrl\+o/i.test(plain)) return text;
+  const marker = " to expand";
+  const index = plain.lastIndexOf(marker);
+  if (index < 0) return text;
+  const restored = `${runtime.sliceByColumn(text, 0, runtime.visibleWidth(plain.slice(0, index)))}ctrl+o${runtime.sliceByColumn(
+    text,
+    runtime.visibleWidth(plain.slice(0, index)),
+    runtime.visibleWidth(plain.slice(index)),
+  )}`;
+  return runtime.truncateToWidth(restored, width, "", false);
+}
+
 function renderedCallSummary(row: ToolRow, width: number, runtime: Runtime, theme: ThemeLike): CallSummary {
   let component = row.callRendererComponent;
   if (!component && Array.isArray(row.contentBox?.children)) {
@@ -347,11 +365,12 @@ function installToolPatch(runtime: Runtime): ToolPatchState | undefined {
   };
   const patchedUpdateDisplay = function updateDisplayWithExpandedErrors(this: ToolRow): void {
     state.versions.set(this, (state.versions.get(this) ?? 0) + 1);
-    if (this.result?.isError) this.expanded = true;
     state.originalUpdateDisplay.call(this);
   };
   const patchedRender = function renderCompactSuccess(this: ToolRow, width: number): string[] {
-    if (!isSettledSuccess(this)) return state.originalRender.call(this, width);
+    if (!isSettledSuccess(this)) {
+      return state.originalRender.call(this, width).map((line) => restoreExpandKeyHint(line, width, state.runtime));
+    }
     try {
       return renderCompactBlock([this], width, state);
     } catch {
