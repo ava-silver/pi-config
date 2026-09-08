@@ -24,38 +24,29 @@ type SarifOutput = {
   }>;
 };
 
-type ScanSummary = {
-  findings?: number;
-};
-
 type ParsedScan = {
   findings: Finding[];
   reportedCount: number;
 };
 
 function parseFindings(output: string): ParsedScan {
-  const documents = output
-    .split("\n")
-    .filter((line) => line.trim())
-    .map((line) => JSON.parse(line) as SarifOutput & ScanSummary);
-  const sarif = documents.find((document) => document.runs);
-  const summary = documents.find((document) => "findings" in document);
-  const findings = (sarif?.runs ?? []).flatMap((run) =>
-    (run.results ?? []).flatMap((result) =>
-      (result.locations ?? []).flatMap((location) => {
-        const region = location.physicalLocation?.region;
-        if (!region?.startLine || !region.startColumn) return [];
-        return [
-          {
-            line: region.startLine,
-            column_start: region.startColumn - 1,
-            column_end: (region.endColumn ?? region.startColumn) - 2,
-          },
-        ];
-      }),
-    ),
+  const sarif = JSON.parse(output) as SarifOutput;
+  if (!sarif.runs) throw new Error("Kingfisher returned SARIF without runs.");
+  const results = sarif.runs.flatMap((run) => run.results ?? []);
+  const findings = results.flatMap((result) =>
+    (result.locations ?? []).flatMap((location) => {
+      const region = location.physicalLocation?.region;
+      if (!region?.startLine || !region.startColumn) return [];
+      return [
+        {
+          line: region.startLine,
+          column_start: region.startColumn - 1,
+          column_end: (region.endColumn ?? region.startColumn) - 2,
+        },
+      ];
+    }),
   );
-  return { findings, reportedCount: summary?.findings ?? findings.length };
+  return { findings, reportedCount: results.length };
 }
 
 function redact(content: string, findings: Finding[]): string {
