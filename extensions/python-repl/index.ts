@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { PythonRepl, type ExecutionResult } from "./runtime.ts";
+import { PythonCommandError, PythonRepl, type ExecutionResult } from "./runtime.ts";
 
 function formatExecution(result: ExecutionResult): string {
   return [
@@ -52,7 +52,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "python_repl",
     label: "Python REPL",
-    description: `Execute Python in a stateful, session-scoped REPL backed by a temporary virtual environment. Variables and imports persist across calls. The final expression is returned like an interactive REPL. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
+    description: `Execute Python in a stateful, session-scoped REPL backed by a temporary virtual environment. Variables and imports persist across calls. The final expression is returned like an interactive REPL. The virtual environment isolates packages, not filesystem, network, or subprocess access. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
     promptSnippet: "Execute Python code in a stateful temporary virtual environment",
     promptGuidelines: [
       "Use python_repl for stateful Python calculations, data exploration, and Python library APIs.",
@@ -81,7 +81,7 @@ export default function (pi: ExtensionAPI) {
     name: "python_repl_install",
     label: "Install Python Packages",
     description:
-      "Install arbitrary PyPI packages into the current Python REPL's temporary virtual environment. Package names may use standard pip requirement syntax.",
+      "Install arbitrary PyPI packages into the current Python REPL's temporary virtual environment. Package names may use standard pip requirement syntax. Package-manager output is capped at 10 MB.",
     parameters: Type.Object({
       packages: Type.Array(Type.String(), {
         description: 'Packages to install, for example ["pandas", "requests==2.32.3"]',
@@ -97,12 +97,18 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal) {
       const packages = params.packages.map((value) => value.trim());
       if (packages.some((value) => value.length === 0)) throw new Error("Package names must not be empty.");
-      const result = await repl.install(packages, signal);
-      const output = await truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n") || "Installed.");
-      return {
-        content: [{ type: "text", text: output }],
-        details: { packages, environmentPath: repl.environmentPath },
-      };
+      try {
+        const result = await repl.install(packages, signal);
+        const output = await truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n") || "Installed.");
+        return {
+          content: [{ type: "text", text: output }],
+          details: { packages, environmentPath: repl.environmentPath },
+        };
+      } catch (error) {
+        if (!(error instanceof PythonCommandError)) throw error;
+        const output = await truncateOutput([error.message, error.stdout, error.stderr].filter(Boolean).join("\n"));
+        throw new Error(output);
+      }
     },
   });
 

@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { killProcessTree } from "../shared/process-tree.ts";
 
@@ -17,12 +18,23 @@ type RunnerResponseValue =
 
 const RUNNER_PATH = fileURLToPath(new URL("runner.py", import.meta.url));
 const COMMAND_OUTPUT_LIMIT = 64 * 1024;
+const INSTALL_OUTPUT_LIMIT = 10 * 1024 * 1024;
 
 export interface ExecutionResult {
   stdout: string;
   stderr: string;
   result: string | null;
   error: string | null;
+}
+
+export class PythonCommandError extends Error {
+  constructor(
+    message: string,
+    readonly stdout: string,
+    readonly stderr: string,
+  ) {
+    super(message);
+  }
 }
 
 interface RunnerResponse {
@@ -74,7 +86,7 @@ function parseExecutionResult(value: unknown): ExecutionResult {
 
 async function createVenv(dir: string, opts: { signal: AbortSignal | undefined; timeoutMs: number }): Promise<void> {
   try {
-    await runCommand("uv", ["venv", "--quiet", dir], opts);
+    await runCommand("uv", ["venv", "--quiet", "--seed", dir], opts);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       await runCommand("python3", ["-m", "venv", dir], opts);
@@ -87,9 +99,13 @@ async function createVenv(dir: string, opts: { signal: AbortSignal | undefined; 
 async function runCommand(
   command: string,
   args: string[],
-  opts: { signal: AbortSignal | undefined; timeoutMs: number },
+  opts: { signal: AbortSignal | undefined; timeoutMs: number; maxOutputBytes?: number },
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    if (opts.signal?.aborted) {
+      reject(new Error("Python operation cancelled."));
+      return;
+    }
     const proc = childProcess.spawn(command, args, {
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
@@ -97,7 +113,10 @@ async function runCommand(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    const append = (current: string, chunk: Buffer) => (current + chunk.toString()).slice(-COMMAND_OUTPUT_LIMIT);
+    const append = (current: string, chunk: Buffer) => {
+      const output = current + chunk.toString();
+      return output.slice(-(opts.maxOutputBytes ?? COMMAND_OUTPUT_LIMIT));
+    };
     proc.stdout.on("data", (chunk: Buffer) => {
       stdout = append(stdout, chunk);
     });
@@ -123,9 +142,13 @@ async function runCommand(
     proc.on("close", (code) => {
       clearTimeout(timeout);
       opts.signal?.removeEventListener("abort", abort);
-      if (opts.signal?.aborted) reject(new Error("Python operation cancelled."));
-      else if (timedOut) reject(new Error(`Python operation timed out after ${opts.timeoutMs / 1000} seconds.`));
-      else if (code !== 0) reject(new Error(stderr.trim() || `${command} exited with code ${code}.`));
+      if (opts.signal?.aborted) reject(new PythonCommandError("Python operation cancelled.", stdout, stderr));
+      else if (timedOut)
+        reject(
+          new PythonCommandError(`Python operation timed out after ${opts.timeoutMs / 1000} seconds.`, stdout, stderr),
+        );
+      else if (code !== 0)
+        reject(new PythonCommandError(stderr.trim() || `${command} exited with code ${code}.`, stdout, stderr));
       else resolve({ stdout, stderr });
     });
   });
@@ -139,6 +162,7 @@ export class PythonRepl {
   private queue: Promise<void> = Promise.resolve();
   private runnerStderr = "";
   private closed = false;
+  private readonly lifecycle = new AbortController();
 
   get environmentPath(): string | undefined {
     return this.tempDir;
@@ -166,6 +190,7 @@ export class PythonRepl {
 
   private async ensureEnvironment(signal?: AbortSignal): Promise<void> {
     this.assertOpen();
+    if (signal?.aborted) throw new Error("Python operation cancelled.");
     if (this.tempDir) return;
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-python-repl-"));
     await fs.chmod(tempDir, 0o700);
@@ -183,11 +208,16 @@ export class PythonRepl {
     if (this.proc) return;
     const proc = childProcess.spawn(this.pythonPath(), ["-u", RUNNER_PATH], {
       detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
     });
     this.proc = proc;
     this.runnerStderr = "";
-    const lines = readline.createInterface({ input: proc.stdout });
+    const protocol = proc.stdio[3];
+    if (!(protocol instanceof Readable)) {
+      this.failRunner(new Error("Python REPL failed to open its protocol stream."));
+      return;
+    }
+    const lines = readline.createInterface({ input: protocol });
     lines.on("line", (line) => {
       let response: RunnerResponse;
       try {
@@ -256,11 +286,16 @@ export class PythonRepl {
     });
   }
 
+  private operationSignal(signal?: AbortSignal): AbortSignal {
+    return signal ? AbortSignal.any([signal, this.lifecycle.signal]) : this.lifecycle.signal;
+  }
+
   execute(code: string, signal?: AbortSignal): Promise<ExecutionResult> {
     return this.exclusive(async () => {
       this.assertOpen();
-      await this.ensureEnvironment(signal);
-      return parseExecutionResult(await this.request("execute", { code }, signal));
+      const operationSignal = this.operationSignal(signal);
+      await this.ensureEnvironment(operationSignal);
+      return parseExecutionResult(await this.request("execute", { code }, operationSignal));
     });
   }
 
@@ -268,23 +303,26 @@ export class PythonRepl {
     return this.exclusive(async () => {
       this.assertOpen();
       if (!this.tempDir) return;
-      await this.request("clear", {}, signal);
+      await this.request("clear", {}, this.operationSignal(signal));
     });
   }
 
   install(packages: string[], signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
     return this.exclusive(async () => {
       this.assertOpen();
-      await this.ensureEnvironment(signal);
+      const operationSignal = this.operationSignal(signal);
+      await this.ensureEnvironment(operationSignal);
       return runCommand(this.pythonPath(), ["-m", "pip", "install", "--", ...packages], {
-        signal,
+        signal: operationSignal,
         timeoutMs: 120_000,
+        maxOutputBytes: INSTALL_OUTPUT_LIMIT,
       });
     });
   }
 
   async close(): Promise<void> {
     this.closed = true;
+    this.lifecycle.abort();
     if (this.proc) this.failRunner(new Error("Python REPL closed."));
     await this.exclusive(async () => {
       if (this.tempDir) await fs.rm(this.tempDir, { recursive: true, force: true });

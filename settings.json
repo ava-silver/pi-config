@@ -5,7 +5,7 @@
   "warnings": {
     "anthropicExtraUsage": false
   },
-  "lastChangelogVersion": "0.85.0",
+  "lastChangelogVersion": "0.85.1",
   "theme": "catppuccin-frappe",
   "defaultThinkingLevel": "medium",
   "quietStartup": true,
