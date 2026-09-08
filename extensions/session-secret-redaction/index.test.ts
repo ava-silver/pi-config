@@ -25,12 +25,13 @@ for (const scanExitCode of [200, 205]) {
 
     const starts = [content.indexOf(secret), content.lastIndexOf(secret)];
     const findings = starts.map((start) => ({
-      finding: {
-        line: 1,
-        column_start: start,
-        column_end: start + secret.length - 1,
-      },
+      startLine: 1,
+      startColumn: start + 1,
+      endColumn: start + secret.length + 1,
     }));
+    const sarif = JSON.stringify({
+      runs: [{ results: findings.map((region) => ({ locations: [{ physicalLocation: { region } }] })) }],
+    });
     let sessionStart: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
     const commands: string[] = [];
     const pi = {
@@ -40,10 +41,9 @@ for (const scanExitCode of [200, 205]) {
       async exec(command: string, args: string[]) {
         commands.push([command, ...args].join(" "));
         if (args[0] === "--version") return { code: 0, stdout: "kingfisher", stderr: "" };
-        const reportedFindings = args.includes("--no-dedup") ? findings : findings.slice(0, 1);
         return {
           code: scanExitCode,
-          stdout: `${reportedFindings.map((finding) => JSON.stringify(finding)).join("\n")}\n`,
+          stdout: `${sarif}\n`,
           stderr: "",
         };
       },
@@ -68,7 +68,7 @@ for (const scanExitCode of [200, 205]) {
     assert.deepEqual(notifications, ["Redacted 2 validated secrets from this session."]);
     assert.deepEqual(commands.slice(0, 2), [
       "kingfisher --version",
-      `kingfisher scan ${sessionFile} --git-history none --only-valid --redact --no-dedup --format jsonl --no-update-check`,
+      `kingfisher scan ${sessionFile} --git-history none --only-valid --redact --no-dedup --format sarif --no-update-check`,
     ]);
   });
 }

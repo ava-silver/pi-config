@@ -7,18 +7,55 @@ type Finding = {
   column_end: number;
 };
 
-type FindingRecord = {
-  finding?: Finding;
+type SarifOutput = {
+  runs?: Array<{
+    results?: Array<{
+      locations?: Array<{
+        physicalLocation?: {
+          region?: {
+            startLine?: number;
+            startColumn?: number;
+            endLine?: number;
+            endColumn?: number;
+          };
+        };
+      }>;
+    }>;
+  }>;
 };
 
-function parseFindings(output: string): Finding[] {
-  const findings: Finding[] = [];
-  for (const line of output.split("\n")) {
-    if (!line.trim()) continue;
-    const record = JSON.parse(line) as FindingRecord;
-    if (record.finding) findings.push(record.finding);
-  }
-  return findings;
+type ScanSummary = {
+  findings?: number;
+};
+
+type ParsedScan = {
+  findings: Finding[];
+  reportedCount: number;
+};
+
+function parseFindings(output: string): ParsedScan {
+  const documents = output
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as SarifOutput & ScanSummary);
+  const sarif = documents.find((document) => document.runs);
+  const summary = documents.find((document) => "findings" in document);
+  const findings = (sarif?.runs ?? []).flatMap((run) =>
+    (run.results ?? []).flatMap((result) =>
+      (result.locations ?? []).flatMap((location) => {
+        const region = location.physicalLocation?.region;
+        if (!region?.startLine || !region.startColumn) return [];
+        return [
+          {
+            line: region.startLine,
+            column_start: region.startColumn - 1,
+            column_end: (region.endColumn ?? region.startColumn) - 2,
+          },
+        ];
+      }),
+    ),
+  );
+  return { findings, reportedCount: summary?.findings ?? findings.length };
 }
 
 function redact(content: string, findings: Finding[]): string {
@@ -83,7 +120,7 @@ async function redactSession(pi: ExtensionAPI, ctx: ExtensionContext): Promise<n
       "--redact",
       "--no-dedup",
       "--format",
-      "jsonl",
+      "sarif",
       "--no-update-check",
     ],
     { timeout: 60_000 },
@@ -91,7 +128,10 @@ async function redactSession(pi: ExtensionAPI, ctx: ExtensionContext): Promise<n
   if (![0, 200, 205].includes(result.code))
     throw new Error(`Kingfisher scan failed: (${result.code}) - ${result.stdout.trim()}${result.stderr.trim()}`);
 
-  const findings = parseFindings(result.stdout);
+  const { findings, reportedCount } = parseFindings(result.stdout);
+  if (reportedCount > 0 && findings.length === 0) {
+    throw new Error(`Kingfisher reported ${reportedCount} finding(s), but returned no redactable locations.`);
+  }
   if (findings.length === 0) return 0;
 
   const info = await stat(sessionFile);
@@ -119,8 +159,9 @@ export default function sessionSecretRedaction(pi: ExtensionAPI): void {
           ctx.ui.notify(`Redacted ${count} validated secret${count === 1 ? "" : "s"} from this session.`, "info");
         }
       } catch (error) {
+        const reason = error instanceof Error ? error.message : "unknown error";
+        console.error(`[session-secret-redaction] ${reason}`, error);
         if (ctx.hasUI) {
-          const reason = error instanceof Error ? error.message : "unknown error";
           ctx.ui.notify(`Could not redact secrets from this Pi session: ${reason}`, "warning");
         }
       }
