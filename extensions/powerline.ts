@@ -348,7 +348,7 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
 
           // Session cost, including background subagents (always shown)
           right.push({
-            text: formatCost(sessionCost + getBackgroundCost()),
+            text: formatCost(sessionCost + getBackgroundCost(`subagents:${ctx.sessionManager.getSessionId()}`)),
             bg: C.panelAlt,
             fg: C.dim,
           });

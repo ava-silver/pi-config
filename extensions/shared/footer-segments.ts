@@ -59,10 +59,8 @@ export function registerBackgroundCost(key: string, cost: number | null): void {
   onChangeCallback?.();
 }
 
-export function getBackgroundCost(): number {
-  let total = 0;
-  for (const cost of backgroundCosts.values()) total += cost;
-  return total;
+export function getBackgroundCost(key: string): number {
+  return backgroundCosts.get(key) ?? 0;
 }
 
 /**
