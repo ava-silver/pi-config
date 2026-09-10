@@ -9,6 +9,7 @@ import { Type, type Static } from "typebox";
 const WORKER_PATH = fileURLToPath(new URL("./worker.ts", import.meta.url));
 const DEFAULT_TIMEOUT_SECONDS = 30;
 const MAX_LIMIT = 50;
+const MAX_GREP_OUTPUT_CHARS = 12_000;
 
 const FindParams = Type.Object({
   pattern: Type.String({ description: "Filename or path terms in the current workspace." }),
@@ -90,8 +91,13 @@ function killWorker(child: ChildProcess): void {
   child.kill("SIGKILL");
 }
 
+function truncateGrepOutput(output: string): string {
+  if (output.length <= MAX_GREP_OUTPUT_CHARS) return output;
+  return `${output.slice(0, MAX_GREP_OUTPUT_CHARS)}\n\n[Output truncated at ${MAX_GREP_OUTPUT_CHARS.toLocaleString()} characters. Narrow the search path or reduce context.]`;
+}
+
 function formatGrep(result: WorkerGrepResult): string {
-  if (result.output !== undefined) return result.output || "No matches found";
+  if (result.output !== undefined) return truncateGrepOutput(result.output) || "No matches found";
   if (result.items.length === 0) return "No matches found";
   let previousPath = "";
   const lines: string[] = [];
@@ -107,7 +113,7 @@ function formatGrep(result: WorkerGrepResult): string {
     lines.push(` ${item.lineNumber}: ${item.lineContent}`);
     item.contextAfter?.forEach((line, index) => lines.push(` ${item.lineNumber + index + 1}- ${line}`));
   }
-  return lines.join("\n");
+  return truncateGrepOutput(lines.join("\n"));
 }
 
 class FffWorker {

@@ -30,7 +30,13 @@ for (const scanExitCode of [200, 205]) {
       endColumn: start + secret.length + 1,
     }));
     const sarif = JSON.stringify({
-      runs: [{ results: findings.map((region) => ({ locations: [{ physicalLocation: { region } }] })) }],
+      runs: [
+        {
+          results: findings.map((region) => ({
+            locations: [{ physicalLocation: { region: { ...region, snippet: { text: secret } } } }],
+          })),
+        },
+      ],
     });
     let sessionStart: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
     const commands: string[] = [];
@@ -38,6 +44,7 @@ for (const scanExitCode of [200, 205]) {
       on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
         if (name === "session_start") sessionStart = handler;
       },
+      registerCommand() {},
       async exec(command: string, args: string[]) {
         commands.push([command, ...args].join(" "));
         if (args[0] === "--version") return { code: 0, stdout: "kingfisher", stderr: "" };
@@ -65,10 +72,70 @@ for (const scanExitCode of [200, 205]) {
     assert.equal(result.includes(secret), false);
     assert.equal(result.split("*".repeat(secret.length)).length - 1, 2);
     assert.doesNotThrow(() => JSON.parse(result));
-    assert.deepEqual(notifications, ["Redacted 2 validated secrets from this session."]);
+    assert.deepEqual(notifications, ["Redacted 2 secrets from this session."]);
     assert.deepEqual(commands.slice(0, 2), [
       "kingfisher --version",
-      `kingfisher scan ${sessionFile} --git-history none --only-valid --redact --no-dedup --format sarif --no-update-check`,
+      `kingfisher scan ${sessionFile} --rules-path ${import.meta.dirname}/rules.yaml --git-history none --validation-filter actionable --no-dedup --format sarif --no-update-check`,
     ]);
   });
 }
+
+test("uses Kingfisher's snippet when its range includes an escaped quote", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-redaction-"));
+  temporaryDirectories.push(directory);
+  const sessionFile = join(directory, "session.jsonl");
+  const secret = "0123456789abcdef0123456789abcdef";
+  const content = `${JSON.stringify({
+    type: "message",
+    message: { content: `DD_API_KEY=\\"${secret}\\"` },
+  })}\n`;
+  await writeFile(sessionFile, content);
+
+  const secretStart = content.indexOf(secret);
+  const sarif = JSON.stringify({
+    runs: [
+      {
+        results: [
+          {
+            locations: [
+              {
+                physicalLocation: {
+                  region: {
+                    startLine: 1,
+                    startColumn: secretStart,
+                    endColumn: secretStart + secret.length - 1,
+                    snippet: { text: secret },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  let sessionStart: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
+  const pi = {
+    on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+      if (name === "session_start") sessionStart = handler;
+    },
+    registerCommand() {},
+    async exec(_command: string, args: string[]) {
+      if (args[0] === "--version") return { code: 0, stdout: "kingfisher", stderr: "" };
+      return { code: 200, stdout: sarif, stderr: "" };
+    },
+  };
+  extension(pi as never);
+
+  await sessionStart?.(
+    {},
+    {
+      hasUI: false,
+      sessionManager: { getSessionFile: () => sessionFile },
+    },
+  );
+
+  const result = await readFile(sessionFile, "utf8");
+  assert.equal(result.includes(secret), false);
+  assert.doesNotThrow(() => JSON.parse(result));
+});
