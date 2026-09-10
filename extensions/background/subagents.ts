@@ -71,6 +71,11 @@ const SAVED_SESSIONS_KEY: unique symbol = Symbol.for("pi.background-subagents.sa
 const RECONNECT_PROMPT =
   "The parent Pi process interrupted your previous run. Continue the original task from the current session state. Do not repeat work that is already complete.";
 
+interface PersistedReset {
+  readonly version: 1;
+  readonly reset: true;
+}
+
 interface SavedSession {
   runtime: SubagentRuntime | undefined;
   managerPromise: Promise<SubagentManagerShape> | undefined;
@@ -82,6 +87,20 @@ interface SavedSession {
 function savedSessionRegistry() {
   const globals = globalThis as typeof globalThis & { [SAVED_SESSIONS_KEY]?: Map<string, SavedSession> };
   return (globals[SAVED_SESSIONS_KEY] ??= new Map());
+}
+
+function processIsRunning(pid: number | undefined): boolean {
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+export function hasLiveSubagentOwner(records: Iterable<PersistedSubagent>): boolean {
+  return [...records].some((record) => record.status === "running" && processIsRunning(record.ownerPid));
 }
 
 function describeSubagent(snap: SubagentSnapshot) {
@@ -138,6 +157,7 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
       if (!sessionContext || !snap.meta.sessionFilePath) continue;
       const record: PersistedSubagent = {
         version: 1,
+        ownerPid: process.pid,
         id: snap.id,
         title: snap.title,
         prompt: snap.prompt,
@@ -268,11 +288,20 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
       const records = new Map<string, PersistedSubagent>();
       for (const entry of ctx.sessionManager.getBranch()) {
         if (entry.type !== "custom" || entry.customType !== SUBAGENT_STATE_ENTRY) continue;
-        const record = entry.data as Partial<PersistedSubagent> | undefined;
-        if (record?.version === 1 && typeof record.id === "string" && typeof record.meta?.sessionFilePath === "string")
+        const record = entry.data as (Partial<PersistedSubagent> & Partial<PersistedReset>) | undefined;
+        if (record?.version !== 1) continue;
+        if (record.reset === true) {
+          records.clear();
+          continue;
+        }
+        if (typeof record.id === "string" && typeof record.meta?.sessionFilePath === "string")
           records.set(record.id, record as PersistedSubagent);
       }
       if (records.size === 0) return;
+      if (hasLiveSubagentOwner(records.values())) {
+        pi.appendEntry(SUBAGENT_STATE_ENTRY, { version: 1, reset: true } satisfies PersistedReset);
+        return;
+      }
       const manager = await getManager();
       const tracked = [...records.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_TRACKED);
       for (const record of tracked) {

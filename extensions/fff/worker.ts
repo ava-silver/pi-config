@@ -116,11 +116,46 @@ function matchesFilename(path: string, pattern: string): boolean {
     .every((term) => lowercasePath.includes(term));
 }
 
+export function rgMatchingLines(
+  args: string[],
+  cwd: string,
+  limit: number,
+  matches: (line: string) => boolean,
+): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("rg", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const items: string[] = [];
+    let buffer = "";
+    let stderr = "";
+    let stopped = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (stopped) return;
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (matches(line)) items.push(line);
+        if (items.length >= limit) {
+          stopped = true;
+          child.kill("SIGTERM");
+          break;
+        }
+      }
+    });
+    child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (!stopped && code !== null && code > 1) reject(new Error(stderr.trim() || "rg failed"));
+      else resolve(items);
+    });
+  });
+}
+
 async function searchFilesWithRg(path: string, pattern: string, limit: number, cwd: string) {
-  const output = await rg(["--files", path], cwd);
-  const matches = (output ? output.split("\n") : []).filter((item) => matchesFilename(item, pattern));
-  const items = matches.slice(0, limit);
-  return { items, resultCount: items.length, totalMatched: matches.length, totalFiles: matches.length };
+  const items = await rgMatchingLines(["--files", path], cwd, limit, (item) => matchesFilename(item, pattern));
+  return { items, resultCount: items.length, totalMatched: items.length, totalFiles: items.length };
 }
 
 function grepArgs(pattern: string, mode: GrepMode): string[] {
@@ -129,13 +164,6 @@ function grepArgs(pattern: string, mode: GrepMode): string[] {
 
 function matchCount(output: string): number {
   return output.split("\n").filter((line) => /^(?:\d+:|.*:\d+:)/.test(line)).length;
-}
-
-function totalMatchCount(output: string): number {
-  return output
-    .split("\n")
-    .filter(Boolean)
-    .reduce((total, line) => total + Number(line), 0);
 }
 
 async function searchContentsWithRg({
@@ -153,10 +181,11 @@ async function searchContentsWithRg({
   mode: GrepMode;
   cwd: string;
 }) {
-  const files = await rg(["--files-with-matches", ...grepArgs(pattern, mode), path], cwd);
-  const matchingFiles = files.split("\n").filter(Boolean);
-  const totalMatched = totalMatchCount(
-    await rg(["--count-matches", "--no-filename", ...grepArgs(pattern, mode), path], cwd),
+  const matchingFiles = await rgMatchingLines(
+    ["--files-with-matches", ...grepArgs(pattern, mode), path],
+    cwd,
+    limit,
+    () => true,
   );
   let resultCount = 0;
   const output: string[] = [];
@@ -179,7 +208,13 @@ async function searchContentsWithRg({
     resultCount += matchCount(matches);
     if (matches) output.push(matches);
   }
-  return { items: [], output: output.join("\n"), resultCount, totalMatched, totalFiles: matchingFiles.length };
+  return {
+    items: [],
+    output: output.join("\n"),
+    resultCount,
+    totalMatched: resultCount,
+    totalFiles: matchingFiles.length,
+  };
 }
 
 let buffer = "";

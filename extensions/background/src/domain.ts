@@ -46,6 +46,7 @@ export interface SubagentMeta {
 
 export interface PersistedSubagent {
   readonly version: 1;
+  readonly ownerPid?: number;
   readonly id: string;
   readonly title: string;
   readonly prompt: string;
