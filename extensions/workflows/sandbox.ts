@@ -216,7 +216,7 @@ export function runWorkflowSandbox(options: RunWorkflowSandboxOptions) {
 
   return new Promise<unknown>((resolve, reject) => {
     const workerPath = fileURLToPath(new URL("./sandbox-child.cjs", import.meta.url));
-    const child = spawn(process.execPath, ["--max-old-space-size=128", "--stack-size=2048", workerPath], {
+    const child = spawn(process.env.PI_BUN_PATH || process.execPath, ["--max-old-space-size=128", "--stack-size=2048", workerPath], {
       cwd: options.cwd,
       env: {
         PATH: process.env.PATH ?? "",

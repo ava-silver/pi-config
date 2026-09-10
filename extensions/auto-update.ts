@@ -100,17 +100,35 @@ if "$1" "$2" update --all >> "$log" 2>&1; then
     ' "$extensions_dir/package.json" > "$tmp" && mv "$tmp" "$extensions_dir/package.json"
     (cd "$extensions_dir" && bun install) >> "$log" 2>&1 || true
   fi
+  loader="$(dirname "$(dirname "$2")")/dist/core/extensions/loader.js"
+  binary="$(dirname "$extensions_dir")/compiled/pi-binary"
+  mkdir -p "$(dirname "$binary")"
+  patch_py=$(mktemp /tmp/pi-loader-patch-XXXXX.py)
+  cat > "$patch_py" << 'PYEOF'
+import os
+path = os.environ["LOADER"]
+src = open(path).read()
+src = src.replace("fileURLToPath(import.meta.resolve(specifier))", "createRequire(import.meta.url).resolve(specifier)")
+if "isCompiledBinary" not in src:
+    src = src.replace("const isTypeScriptSourceRuntime", 'const isCompiledBinary = !path.basename(process.execPath).startsWith("bun");\nconst isTypeScriptSourceRuntime')
+    src = src.replace("isBunBinary || isNodeSeaBinary || isBundledNode", "isCompiledBinary\n            ? { virtualModules: VIRTUAL_MODULES, tryNative: true }\n            : isBunBinary || isNodeSeaBinary || isBundledNode", 1)
+open(path, "w").write(src)
+PYEOF
+  LOADER="$loader" python3 "$patch_py" >> "$log" 2>&1; rm -f "$patch_py"
+  "$1" build --compile --bytecode --minify --outfile="$binary" "$2" >> "$log" 2>&1 \
+    || rm -f "$binary"
 fi
 `;
 
-    const piEntrypoint = process.argv[1];
+    const piEntrypoint = process.env.PI_CLI_PATH || process.argv[1];
     if (!piEntrypoint) {
       remove(lockPath);
       return;
     }
+    const bunExec = process.env.PI_BUN_PATH || process.execPath;
     const child = spawn(
       "/bin/sh",
-      ["-c", script, "pi-auto-update", process.execPath, piEntrypoint, resultPath, logPath, lockPath, extensionsDir],
+      ["-c", script, "pi-auto-update", bunExec, piEntrypoint, resultPath, logPath, lockPath, extensionsDir],
       { detached: true, stdio: "ignore" },
     );
     child.once("error", () => {
