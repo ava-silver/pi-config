@@ -117,18 +117,19 @@ test("spend ledger continues after a malformed JSONL line", () => {
   assert.deepEqual(parseLedger(`{not JSON}\n${JSON.stringify(valid)}`), [valid]);
 });
 
-test("spend graph omits models below $1", () => {
-  const html = graphHtml([
-    record({ model: "low-cost", cost: 0.99 }),
-    record({
-      key: recordKey("assistant", "high-entry", timestamp),
-      entryId: "high-entry",
-      model: "high-cost",
-      cost: 1,
-    }),
-  ]);
-  assert.equal(html.includes("low-cost"), false);
-  assert.equal(html.includes("high-cost"), true);
+test("spend graph groups models outside the top five as Other", () => {
+  const html = graphHtml(
+    ["first", "second", "third", "fourth", "fifth", "sixth"].map((model, index) =>
+      record({
+        key: recordKey("assistant", `entry-${model}`, timestamp),
+        entryId: `entry-${model}`,
+        model,
+        cost: 6 - index,
+      }),
+    ),
+  );
+  assert.equal(html.includes("sixth"), false);
+  assert.match(html, /"name":"Other"/);
 });
 
 test("spend graph renders hostile model names as text", () => {

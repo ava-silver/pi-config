@@ -12,7 +12,7 @@ const GRAPH_FILE = join(CACHE_DIR, "spend.html");
 const SESSIONS_DIR = join(homedir(), ".pi", "agent", "sessions");
 const MIN_TIMESTAMP = Date.UTC(2000, 0, 1);
 const MAX_TIMESTAMP = Date.UTC(2100, 0, 1);
-const MIN_MODEL_COST = 1;
+const TOP_MODEL_COUNT = 5;
 
 type SpendKind = "assistant" | "tool" | "compaction" | "branch_summary";
 
@@ -333,10 +333,16 @@ function summary(records: Iterable<SpendRecord>): string {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([name, cost]) => `  ${formatCost(cost)}  ${name}`);
+  const rankedModels = [...byModel].sort((a, b) => b[1] - a[1]);
+  const otherModelsCost = rankedModels.slice(TOP_MODEL_COUNT).reduce((sum, [, cost]) => sum + cost, 0);
+  const models = [
+    ...rankedModels.slice(0, TOP_MODEL_COUNT),
+    ...(otherModelsCost ? [["Other", otherModelsCost] as const] : []),
+  ].map(([name, cost]) => `  ${formatCost(cost)}  ${name}`);
   return [
     `Pi spend: ${formatCost(total)} across ${bySession.size} sessions (${all.length} responses)`,
     "By model:",
-    ...top(new Map([...byModel].filter(([, cost]) => cost >= MIN_MODEL_COST))),
+    ...models,
     "By session:",
     ...top(bySession),
   ].join("\n");
@@ -353,7 +359,19 @@ export function graphHtml(records: Iterable<SpendRecord>): string {
     const name = `${record.provider}/${record.model}`;
     modelTotals.set(name, (modelTotals.get(name) || 0) + record.cost);
   }
-  const modelNames = [...modelTotals].filter(([, cost]) => cost >= MIN_MODEL_COST).map(([name]) => name);
+  const topModelNames = new Set(
+    [...modelTotals]
+      .sort(([, leftCost], [, rightCost]) => rightCost - leftCost)
+      .slice(0, TOP_MODEL_COUNT)
+      .map(([name]) => name),
+  );
+  const modelGroups = [
+    ...[...topModelNames].map((name) => ({ name, modelNames: new Set([name]) })),
+    ...(modelTotals.size > topModelNames.size
+      ? [{ name: "Other", modelNames: new Set([...modelTotals.keys()].filter((name) => !topModelNames.has(name))) }]
+      : []),
+  ];
+
   const observedDates = [...new Set(all.map((record) => new Date(record.timestamp).toISOString().slice(0, 10)))].sort();
   const dates: string[] = [];
   const firstObservedDate = observedDates[0];
@@ -369,10 +387,10 @@ export function graphHtml(records: Iterable<SpendRecord>): string {
   }
 
   const dateIndexes = new Map(dates.map((date, index) => [date, index]));
-  const models = modelNames.map((name, modelIndex) => {
+  const models = modelGroups.map(({ name, modelNames }, modelIndex) => {
     const daily = Array(dates.length).fill(0) as number[];
     for (const record of all) {
-      if (`${record.provider}/${record.model}` !== name) continue;
+      if (!modelNames.has(`${record.provider}/${record.model}`)) continue;
       const date = new Date(record.timestamp).toISOString().slice(0, 10);
       const index = dateIndexes.get(date);
       if (index !== undefined) daily[index] = (daily[index] ?? 0) + record.cost;
