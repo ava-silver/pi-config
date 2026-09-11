@@ -80,6 +80,68 @@ for (const scanExitCode of [200, 205]) {
   });
 }
 
+test("redacts the escape starter when the match begins inside an escape sequence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-redaction-"));
+  temporaryDirectories.push(directory);
+  const sessionFile = join(directory, "session.jsonl");
+  const fake_secret = "0123456789abcdef0123456789abcdef";
+  const content = `${JSON.stringify({
+    type: "message",
+    message: { content: `DD_API_KEY\t${fake_secret}\nDD_SITE\tdatadoghq.com` },
+  })}\n`;
+  await writeFile(sessionFile, content);
+
+  // Kingfisher matches from the `t` of the raw `\t` escape, so redacting the
+  // reported range alone would leave `\*` behind.
+  const snippet = `t${fake_secret}`;
+  const sarif = JSON.stringify({
+    runs: [
+      {
+        results: [
+          {
+            locations: [
+              {
+                physicalLocation: {
+                  region: {
+                    startLine: 1,
+                    startColumn: content.indexOf(snippet) + 1,
+                    endColumn: content.indexOf(snippet) + snippet.length,
+                    snippet: { text: snippet },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  let sessionStart: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
+  const pi = {
+    on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+      if (name === "session_start") sessionStart = handler;
+    },
+    registerCommand() {},
+    async exec(_command: string, args: string[]) {
+      if (args[0] === "--version") return { code: 0, stdout: "kingfisher", stderr: "" };
+      return { code: 200, stdout: sarif, stderr: "" };
+    },
+  };
+  extension(pi as never);
+
+  await sessionStart?.(
+    {},
+    {
+      hasUI: false,
+      sessionManager: { getSessionFile: () => sessionFile },
+    },
+  );
+
+  const result = await readFile(sessionFile, "utf8");
+  assert.equal(result.includes(fake_secret), false);
+  assert.doesNotThrow(() => JSON.parse(result));
+});
+
 test("uses Kingfisher's snippet when its range includes an escaped quote", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-redaction-"));
   temporaryDirectories.push(directory);

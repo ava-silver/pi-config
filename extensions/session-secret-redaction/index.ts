@@ -71,8 +71,13 @@ function redact(content: string, findings: Finding[]): string {
     for (const finding of matches.sort((a, b) => b.column_start - a.column_start)) {
       const matchedSnippet = finding.snippet;
       const snippetStart = matchedSnippet ? line.join("").indexOf(matchedSnippet) : -1;
-      const start = snippetStart >= 0 ? snippetStart : finding.column_start;
+      let start = snippetStart >= 0 ? snippetStart : finding.column_start;
       const end = snippetStart >= 0 ? start + Array.from(matchedSnippet ?? "").length : finding.column_end + 1;
+      // An odd backslash run before the range ends in an escape starter (e.g. the `\` of `\"`).
+      // Redact it too, or the stars leave an invalid escape like `\*`.
+      let backslashes = 0;
+      while (line[start - backslashes - 1] === "\\") backslashes += 1;
+      if (backslashes % 2 === 1) start -= 1;
       if (start < 0 || end > line.length || start >= end) {
         throw new Error(`Invalid Kingfisher range at ${lineNumber}:${finding.column_start}-${finding.column_end}`);
       }
