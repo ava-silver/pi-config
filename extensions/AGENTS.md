@@ -1,6 +1,6 @@
 # Pi extension standards
 
-- Finish every change with `bun run check` from this (extensions) directory.
+- Finish every change with `cd extensions && bun run check` from the repository root. Do not run `bun run check` from the repository root.
 - Keep `index.ts` focused on registration and lifecycle wiring.
 - Import only from the same extension or `shared/`; communicate across extensions through typed `pi.events` contracts.
 - Add shared code only when at least two extensions use it.
