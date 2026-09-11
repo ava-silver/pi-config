@@ -1,0 +1,11 @@
+{
+  "provider": "exa",
+  "autoOpenBrowser": false,
+  "allowBrowserCookies": false,
+  "tools": {
+    "webSearch": { "enabled": false },
+    "sourceCheck": { "enabled": false },
+    "fetchContent": { "enabled": true },
+    "getSearchContent": { "enabled": true }
+  }
+}
