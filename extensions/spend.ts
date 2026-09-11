@@ -677,6 +677,18 @@ export function createSpendStore({
   return { records, loadLedger, save, importSessions };
 }
 
+const RANGE_DAYS = { day: 1, week: 7, month: 30, year: 365 };
+
+function parseSpendArgs(args: string) {
+  const tokens = args.trim().toLowerCase().split(/\s+/);
+  const name = tokens.find((token) => token in RANGE_DAYS) as keyof typeof RANGE_DAYS | undefined;
+  const days = tokens.includes("all") ? undefined : (name ?? "month");
+  return {
+    text: tokens.includes("text"),
+    since: days === undefined ? undefined : Date.now() - RANGE_DAYS[days] * 86_400_000,
+  };
+}
+
 export default function spendExtension(pi: ExtensionAPI): void {
   const store = createSpendStore();
 
@@ -714,18 +726,20 @@ export default function spendExtension(pi: ExtensionAPI): void {
   pi.on("session_tree", saveCurrentSession);
 
   pi.registerCommand("spend", {
-    description: "Open Pi spend graphs in the browser (use /spend text for the report)",
+    description: "Open Pi spend graphs in the browser (usage: /spend [day|week|month|year|all] [text])",
     handler: async (args, ctx) => {
       await store.importSessions();
-      if (args.trim() === "text") {
-        const report = summary(store.records.values());
+      const { text, since } = parseSpendArgs(args);
+      const records = [...store.records.values()].filter((record) => since === undefined || record.timestamp >= since);
+      if (text) {
+        const report = summary(records);
         if (ctx.hasUI) await ctx.ui.editor("Pi spend", report);
         else console.log(report);
         return;
       }
 
       await mkdir(CACHE_DIR, { recursive: true });
-      await writeFile(GRAPH_FILE, graphHtml(store.records.values()));
+      await writeFile(GRAPH_FILE, graphHtml(records));
       const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
       const commandArgs = process.platform === "win32" ? ["/c", "start", "", GRAPH_FILE] : [GRAPH_FILE];
       const result = await pi.exec(command, commandArgs, { timeout: 5_000 });
