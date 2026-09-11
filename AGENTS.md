@@ -7,7 +7,6 @@
 
 - Start with the simplest implementation that satisfies the stated requirements and existing tests. Before adding an abstraction, guard, or edge-case handling, name (to yourself) the concrete requirement, failing test, observed failure, or established repository convention it addresses -- with file:line if it's a type or call site. If you cannot, leave it out. When the answer is a lookup question (can this be null? who are the callers? does this already exist in the repo?), go look it up rather than hedging.
 - Prefer functional code over imperative code. In TypeScript and Python, favor composition and transformations over mutable loops. For Go code longer than a script, add small helper functions when needed (like map/filter) to preserve a functional style.
-- Prefer the Official CLI over an MCP server for connecting with platforms (`acli` for Jira/Confluence, `pup` for Datadog, `gh` for GitHub, etc).
 - Treat Jira tickets as work-tracking context, not an exhaustive specification. Do not remove or label diff behavior speculative merely because it is absent from the ticket; use the diff, surrounding code, tests, and user direction to establish intent. Ask before removing behavior when intent remains unclear.
 - In general, opt for existing tools (formatters, linters, etc) for fixing problems where possible instead of manual edits
 - Before implementing new logic, search for an existing helper or implementation and reuse it when appropriate.
@@ -27,6 +26,8 @@
 
 ## Tools
 
+- Prefer the Official CLI over an MCP server for connecting with platforms (`acli` for Jira/Confluence, `pup` for Datadog, `gh` for GitHub, etc).
+  - `gh` and `gt` commands must be run from the repo you aim to interact with, since they use a shim to determine which github org to auth with.
 - When authentication is required or expired, start the interactive authentication flow and let me complete it instead of stopping.
 - Run commands needing AWS auth through `aws-sso-exec` (for example, `aws-sso-exec aws sts get-caller-identity`). It uses native AWS SSO and opens a browser for the user to auth only when required.
 - Use Colima instead of Docker.
