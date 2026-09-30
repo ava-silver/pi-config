@@ -322,6 +322,6 @@ export default function repositoryContextExtension(pi: ExtensionAPI): void {
       }
     }
     if (!context) return;
-    return { systemPrompt: `${event.systemPrompt}\n\n${buildRepositoryPrompt(context)}` };
+    event.systemPromptOptions.appendSystemPrompt += `\n\n${buildRepositoryPrompt(context)}`;
   });
 }

@@ -90,15 +90,13 @@ trap finish EXIT HUP INT TERM
 if "$1" "$2" update --all >> "$log" 2>&1; then
   status=success
   pi_pkg="$(dirname "$(dirname "$2")")/package.json"
-  new_version=$(jq -r .version "$pi_pkg" 2>>"$log")
+  new_version=$("$1" -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$pi_pkg','utf8')).version)" 2>>"$log")
   if [ -n "$new_version" ] && [ -f "$extensions_dir/package.json" ]; then
-    tmp=$(mktemp)
-    jq --arg v "$new_version" '
-      .devDependencies["@earendil-works/pi-coding-agent"] = $v |
-      .devDependencies["@earendil-works/pi-ai"] = $v |
-      .devDependencies["@earendil-works/pi-tui"] = $v
-    ' "$extensions_dir/package.json" > "$tmp" && mv "$tmp" "$extensions_dir/package.json"
-    (cd "$extensions_dir" && bun install) >> "$log" 2>&1 || true
+    (cd "$extensions_dir" && "$1" add --dev \
+      "@earendil-works/pi-coding-agent@$new_version" \
+      "@earendil-works/pi-ai@$new_version" \
+      "@earendil-works/pi-tui@$new_version" \
+      "@earendil-works/pi-server@$new_version") >> "$log" 2>&1 || true
   fi
 fi
 `;

@@ -61,9 +61,7 @@ export default function agentsMdExtension(pi: ExtensionAPI): void {
       return `<local_instructions path="${path}">\n${content}\n</local_instructions>`;
     });
 
-    return {
-      systemPrompt: `${event.systemPrompt}\n\n${blocks.join("\n\n")}`,
-    };
+    event.systemPromptOptions.appendSystemPrompt += `\n\n${blocks.join("\n\n")}`;
   });
 
   pi.on("tool_result", (event, ctx) => {
