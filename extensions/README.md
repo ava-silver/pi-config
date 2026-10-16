@@ -18,7 +18,6 @@
 | `repository-context.ts` | Adds cached GitHub repository and GitHub Actions or GitLab CI metadata to the prompt.    |
 | `ui-performance.ts`     | Records event-loop stalls of at least one second to `~/.pi/agent/ui-blocking.jsonl`.     |
 
-| `python-repl/` | Runs stateful Python in a temporary virtual environment. |
 | `read-aloud/` | Rewrites and reads the latest response aloud. |
 | `session-secret-redaction/` | Redacts detected secrets from Pi session files. |
 | `shell.ts` | Runs shell commands with zsh aliases and escalating cancellation. |
@@ -44,5 +43,3 @@ Bun manages dependencies and commands. Tests use Node because the workflow sandb
 ## Layout
 
 Keep small extensions as top-level `.ts` files. Use a directory with `index.ts` once an extension needs multiple modules. Colocate unit tests as `*.test.ts`; reserve `test/` for integration tests.
-
-All dependencies belong in the root `package.json` and `bun.lock`. Pi-provided packages remain peer dependencies, with matching pinned development versions used by `setup.sh`. Provision external executables through `Brewfile`, not extension runtime code.
