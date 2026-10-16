@@ -4,7 +4,7 @@
 | ----------------------- | ---------------------------------------------------------------------------------------- |
 | `agents-md.ts`          | Loads local and subdirectory `AGENTS.md` instructions into agent context.                |
 | `ask-user/`             | Lets the agent ask you a multiple-choice question in the TUI.                            |
-| `auto-update.ts`        | Checks for and installs Pi package updates once per day.                                 |
+| `update.ts`             | Manual `/update` command; pre-flight check, updates, smoke test.                                 |
 | `background/`           | Runs subagents and shell commands in the background.                                     |
 | `caffeinate.ts`         | Keeps the display awake while the agent runs.                                            |
 | `command-blocker.ts`    | Blocks configured commands (e.g. `bazel`, `bzl`, unsafe `gh pr merge`) via TS rules.     |
