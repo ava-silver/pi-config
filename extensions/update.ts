@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export default function (pi: ExtensionAPI): void {
   pi.registerCommand("update", {
     description: "Manual update: pre-check, upgrade, post-check, smoke test",
-    handler: async (args, ctx) => {
+    handler: async () => {
       const extDir = "extensions";
       const smokeFile = "/tmp/pi-update-smoke.txt";
       const diagnostics: string[] = [];
@@ -29,9 +29,7 @@ export default function (pi: ExtensionAPI): void {
       if (pre.includes("FAILED") || pre.includes("error") || pre.includes("FAIL")) {
         diagnostics.push("=== PRE-FLIGHT CHECK FAILED, BLOCKING UPDATE ===");
         diagnostics.push(pre);
-        pi.sendUserMessage(
-          `Update aborted: extensions are broken.\n\n${diagnostics.join("\n")}`
-        );
+        pi.sendUserMessage(`Update aborted: extensions are broken.\n\n${diagnostics.join("\n")}`);
         return;
       }
 
@@ -40,9 +38,7 @@ export default function (pi: ExtensionAPI): void {
       if (upd.includes("error") || upd.includes("FAIL")) {
         diagnostics.push("=== PACKAGE UPDATE FAILED ===");
         diagnostics.push(upd);
-        pi.sendUserMessage(
-          `Update failed. Run diagnostics:\n\n${diagnostics.join("\n")}`
-        );
+        pi.sendUserMessage(`Update failed. Run diagnostics:\n\n${diagnostics.join("\n")}`);
         return;
       }
 
@@ -52,7 +48,7 @@ export default function (pi: ExtensionAPI): void {
         diagnostics.push("=== POST-CHECK FAILED ===");
         diagnostics.push(post);
         pi.sendUserMessage(
-          `Update partially succeeded but post-check failed. Diagnostics:\n\n${diagnostics.join("\n")}`
+          `Update partially succeeded but post-check failed. Diagnostics:\n\n${diagnostics.join("\n")}`,
         );
         return;
       }
@@ -64,24 +60,18 @@ export default function (pi: ExtensionAPI): void {
         if (back !== "PI_UPDATE_SMOKE=ok") {
           diagnostics.push("=== SMOKE TEST FAILED ===");
           diagnostics.push(`Expected PI_UPDATE_SMOKE=ok, got: ${back}`);
-          pi.sendUserMessage(
-            `Smoke test failed.\n\n${diagnostics.join("\n")}`
-          );
+          pi.sendUserMessage(`Smoke test failed.\n\n${diagnostics.join("\n")}`);
           return;
         }
       } catch (e: any) {
         diagnostics.push("=== SMOKE TEST FAILED ===");
         diagnostics.push(String(e));
-        pi.sendUserMessage(
-          `Smoke test failed.\n\n${diagnostics.join("\n")}`
-        );
+        pi.sendUserMessage(`Smoke test failed.\n\n${diagnostics.join("\n")}`);
         return;
       }
 
       diagnostics.push("=== UPDATE COMPLETE: ALL CHECKS PASSED ===");
-      pi.sendUserMessage(
-        `Update successful.\n\n${diagnostics.join("\n")}"`
-      );
+      pi.sendUserMessage(`Update successful.\n\n${diagnostics.join("\n")}"`);
     },
   });
 }
