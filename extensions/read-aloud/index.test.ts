@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
-import { waitForTasks } from "./index.ts";
+import { parseLoginctlPresence, waitForTasks } from "./index.ts";
 
 test("shutdown wait is bounded for unfinished speech", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
@@ -11,4 +12,11 @@ test("shutdown wait is bounded for unfinished speech", async () => {
   } finally {
     mock.timers.reset();
   }
+});
+
+test("loginctl presence requires an unlocked, non-idle session", () => {
+  assert.equal(parseLoginctlPresence("LockedHint=no\nIdleHint=no\n"), true);
+  assert.equal(parseLoginctlPresence("LockedHint=yes\nIdleHint=no\n"), false);
+  assert.equal(parseLoginctlPresence("LockedHint=no\nIdleHint=yes\n"), false);
+  assert.equal(parseLoginctlPresence(""), undefined);
 });

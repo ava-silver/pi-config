@@ -162,6 +162,14 @@ export function parseScreenLocked(output: string): boolean | undefined {
   return match[1] === "Yes";
 }
 
+/** Parses `loginctl show-session -p LockedHint -p IdleHint` output. */
+export function parseLoginctlPresence(output: string): boolean | undefined {
+  const locked = output.match(/^LockedHint=(yes|no)$/m)?.[1];
+  const idle = output.match(/^IdleHint=(yes|no)$/m)?.[1];
+  if (!locked || !idle) return undefined;
+  return locked === "no" && idle === "no";
+}
+
 export function parseRate(input: string): number | undefined {
   if (!/^\d+(?:\.\d+)?$/.test(input.trim())) return undefined;
   const speed = Number(input.trim());
@@ -515,6 +523,8 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
   }
 
   async function userIsPresent(signal: AbortSignal): Promise<boolean> {
+    if (process.platform === "linux") return linuxUserIsPresent(signal);
+    if (process.platform !== "darwin") return false;
     try {
       const [root, hid] = await Promise.all([
         pi.exec("/usr/sbin/ioreg", ["-n", "Root", "-d1"], { signal, timeout: 5_000 }),
@@ -524,6 +534,20 @@ export default function readAloudExtension(pi: ExtensionAPI): void {
       const locked = parseScreenLocked(root.stdout);
       const idleMs = parseHidIdleMs(hid.stdout);
       return locked === false && idleMs !== undefined && idleMs < PRESENCE_IDLE_LIMIT_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  // Best effort: IdleHint is only accurate when the desktop environment reports idleness to logind.
+  async function linuxUserIsPresent(signal: AbortSignal): Promise<boolean> {
+    try {
+      const session = process.env.XDG_SESSION_ID ?? "auto";
+      const result = await pi.exec("loginctl", ["show-session", session, "-p", "LockedHint", "-p", "IdleHint"], {
+        signal,
+        timeout: 5_000,
+      });
+      return result.code === 0 && parseLoginctlPresence(result.stdout) === true;
     } catch {
       return false;
     }
