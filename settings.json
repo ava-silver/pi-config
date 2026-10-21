@@ -28,16 +28,10 @@
   "defaultProvider": "baseten",
   "defaultModel": "baseten/moonshotai/Kimi-K3",
   "enabledModels": [
-    "openai-codex/gpt-5.6-sol",
-    "openai-codex/gpt-5.6-terra",
-    "anthropic/claude-opus-4-8",
-    "openai-codex/gpt-5.6-luna",
-    "google/gemini-3.8-flash",
-    "openai/openai/gpt-6-astra",
-    "baseten/baseten/deepseek-ai/DeepSeek-V4-Flash-0731",
-    "baseten/baseten/moonshotai/Kimi-K3",
-    "baseten/baseten/zai-org/GLM-5.3-Flash",
-    "baseten/baseten/zai-org/GLM-5.3-Fast"
+    "anthropic/claude-opus-5-5",
+    "anthropic/claude-sonnet-5-5",
+    "openai-codex/gpt-6.1-sol",
+    "baseten/deepseek-v4-1-flash"
   ],
   "showCacheMissNotices": true,
   "collapseChangelog": true,
