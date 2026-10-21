@@ -4,6 +4,7 @@
 !/.gitignore
 !/.pre-commit-config.yaml
 !/AGENTS.md
+!/justfile
 !/keybindings.json
 !/models.json
 !/pi-auto-rename.json

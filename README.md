@@ -30,3 +30,9 @@ The setup script installs extension dependencies.
 ## Add tracked files
 
 The `.gitignore` ignores new paths by default to prevent runtime state from being committed accidentally. Add an explicit exception when you create a new tracked top-level file or directory.
+
+## Branches and `just`
+
+`main` holds everything shared. A machine-specific branch (e.g. `personal`) is `main` plus exactly one overlay commit that only touches `settings.json` and `models.json`. Land code changes on `main`; never commit code to the overlay branch.
+
+Run `just` to list recipes. The common ones: `just status`, `just sync` (fetch and rebase onto `origin/main`), `just publish` (push; force-with-lease on `personal`), and `just check`.
