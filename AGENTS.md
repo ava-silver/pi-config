@@ -40,8 +40,3 @@
 
 - Pi loads extensions, prompts, and themes from `~/.pi/agent/` directly; use `/reload` after changing them.
 - All skills live in `~/skills/skills/` (also loads `~/dd/claude-marketplace/serverless/skills`)
-
-## RTK (token-optimized command wrapper)
-
-- Prefix shell commands with `rtk` (e.g. `rtk git status`, `rtk cargo test`) -- it cuts token usage and is idempotent, so prefixing is always safe. If you think something is getting mangled, you may try without `rtk`, but only after trying with `rtk` first.
-- Use `rtk` directly for meta commands: `rtk gain`, `rtk gain --history`, `rtk discover`, `rtk proxy <cmd>`.
