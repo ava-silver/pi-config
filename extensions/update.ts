@@ -1,10 +1,11 @@
 // `/update` -- background update workflow:
 //   1. auto-format extensions (best-effort)
-//   2. pre-flight: bun run check
+//   2. pre-flight: sync node_modules to bun.lock, then bun run check
 //   3. bun update --all --latest --all-deps
 //   4. skip post-steps if lockfile unchanged (nothing to do)
-//   5. post-check: bun run check
-//   6. smoke test: write a unique token to a temp file, ask pi to read it
+//   5. install the pinned pi packages globally
+//   6. post-check: bun run check
+//   7. smoke test: write a unique token to a temp file, ask pi to read it
 //      back via --print --no-session, assert the token appears in output
 //
 // All steps run in a detached background process. Results surface via
@@ -87,8 +88,8 @@ trap finish EXIT HUP INT TERM
 # Auto-format (best-effort: fixes trivial whitespace before the check gate)
 (cd "$extensions_dir" && "$bun_bin" run format) >> "$log" 2>&1
 
-# Pre-flight: full check must pass before touching packages
-if ! (cd "$extensions_dir" && "$bun_bin" run check) >> "$log" 2>&1; then
+# Pre-flight: node_modules can lag bun.lock after a git pull, so sync it first
+if ! (cd "$extensions_dir" && "$bun_bin" install --frozen-lockfile && "$bun_bin" run check) >> "$log" 2>&1; then
   status=preflight_failed
   exit 0
 fi
@@ -105,6 +106,16 @@ mtime_after=$(stat -f %m "$lockfile" 2>/dev/null || stat -c %Y "$lockfile" 2>/de
 # Nothing changed: skip post-steps entirely
 if [ "$mtime_before" = "$mtime_after" ]; then
   status=no_changes
+  exit 0
+fi
+
+# The pi command runs the global install, so match it to the new pins
+global_pkgs=$(cd "$extensions_dir" && "$bun_bin" -e '
+const deps = require("./package.json").devDependencies;
+console.log(["pi-coding-agent", "pi-server"].map((n) => "@earendil-works/" + n + "@" + deps["@earendil-works/" + n]).join(" "));
+')
+if ! "$bun_bin" install -g --ignore-scripts $global_pkgs >> "$log" 2>&1; then
+  status=global_install_failed
   exit 0
 fi
 
@@ -184,9 +195,11 @@ fi
             ? "pre-flight check"
             : result === "postcheck_failed"
               ? "post-update check"
-              : result === "smoke_failed"
-                ? "smoke test"
-                : result;
+              : result === "global_install_failed"
+                ? "global pi install"
+                : result === "smoke_failed"
+                  ? "smoke test"
+                  : result;
 
         const msg = [
           `/update failed at: ${label}`,
