@@ -115,7 +115,7 @@ async function mapWithConcurrency<T, R>(
 async function ensureKingfisher(pi: ExtensionAPI): Promise<void> {
   try {
     const result = await pi.exec("kingfisher", ["--version"], { timeout: 10_000 });
-    if (result.code === 0) return;
+    if (result.code === 0 && result.stdout.trim()) return;
   } catch {
     // Report the missing provisioned dependency below.
   }
@@ -151,6 +151,10 @@ async function redactFile(pi: ExtensionAPI, sessionFile: string): Promise<number
   if (![0, 200, 205].includes(result.code))
     throw new Error(`Kingfisher scan failed: (${result.code}) - ${result.stdout.trim()}${result.stderr.trim()}`);
 
+  // A crashed scanner (e.g. SIGSEGV) can surface as exit 0 with no output; don't feed that to JSON.parse.
+  if (!result.stdout.trim())
+    throw new Error(`Kingfisher produced no output (exit ${result.code}): ${result.stderr.trim() || "no stderr"}`);
+
   const { findings, reportedCount } = parseFindings(result.stdout);
   if (reportedCount > 0 && findings.length === 0) {
     throw new Error(`Kingfisher reported ${reportedCount} finding(s), but returned no redactable locations.`);
@@ -180,6 +184,8 @@ async function redactSession(pi: ExtensionAPI, ctx: ExtensionContext): Promise<n
 
 export default function sessionSecretRedaction(pi: ExtensionAPI): void {
   let pending = Promise.resolve();
+  // Automatic runs fire on every session event; warn about a broken scanner once, not every time.
+  let warnedUnavailable = false;
 
   function setStatus(ctx: ExtensionContext, text?: string): void {
     if (ctx.mode !== "tui") return;
@@ -205,8 +211,12 @@ export default function sessionSecretRedaction(pi: ExtensionAPI): void {
       } catch (error) {
         const reason = error instanceof Error ? error.message : "unknown error";
         console.error(`[session-secret-redaction] ${reason}`, error);
-        if (ctx.hasUI) {
-          ctx.ui.notify(`Could not redact secrets from this Pi session: ${reason}`, "warning");
+        if (ctx.hasUI && !warnedUnavailable) {
+          warnedUnavailable = true;
+          ctx.ui.notify(
+            `Secret redaction is not working, so this session may contain unredacted secrets (further warnings suppressed): ${reason}`,
+            "warning",
+          );
         }
       }
     });
