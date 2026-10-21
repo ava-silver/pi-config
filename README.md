@@ -35,4 +35,11 @@ The `.gitignore` ignores new paths by default to prevent runtime state from bein
 
 `main` holds everything shared. A machine-specific branch (e.g. `personal`) is `main` plus exactly one overlay commit that only touches `settings.json` and `models.json`. Land code changes on `main`; never commit code to the overlay branch.
 
-Run `just` to list recipes. The common ones: `just status`, `just sync` (fetch and rebase onto `origin/main`), `just publish` (push; force-with-lease on `personal`), and `just check`.
+Run `just` to list recipes. The common ones:
+
+- `just commit "message" [paths...]` -- commit working-tree changes to `main` (from either branch; defaults to every changed file except `settings.json` / `models.json`), then rebase `personal` onto it. Local only.
+- `just sync` -- fast-forward `main` to `origin/main` and rebase `personal` onto it. Local only.
+- `just publish` -- push `main`, and `personal` with `--force-with-lease` (it is rewritten on every restack).
+- `just status`, `just check`, `just overlay`.
+
+Both `commit` and `sync` stash and restore any uncommitted work (including pi's runtime edits to `settings.json`) and return you to the branch you started on.
