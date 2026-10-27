@@ -5,7 +5,7 @@
   "warnings": {
     "anthropicExtraUsage": false
   },
-  "lastChangelogVersion": "1.3.0",
+  "lastChangelogVersion": "1.4.0",
   "theme": "catppuccin-frappe",
   "defaultThinkingLevel": "medium",
   "quietStartup": true,
@@ -24,9 +24,7 @@
     "-extensions/trajectory/index.ts"
   ],
   "skills": [
-    "~/skills/skills",
-    "~/dd/claude-marketplace/serverless/skills",
-    "~/dd/experimental/users/ava.silver/ssi/skills/"
+    "~/skills/skills"
   ],
   "defaultProvider": "spotify",
   "defaultModel": "spotify/claude-sonnet-5-5",
