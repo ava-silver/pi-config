@@ -5,7 +5,7 @@ export function buildSubagentSpawnToolDescription(modelExamples: readonly string
   const scopedModels =
     modelExamples.length > 0 ? ` Scoped model examples: ${modelExamples.map((model) => `"${model}"`).join(", ")}.` : "";
   return (
-    "Spawn a background subagent: a headless pi agent with its own context window. Spawning starts work in the background and returns an id immediately. You can message, inspect, wait for, or cancel the subagent. Its result is delivered automatically when it settles. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once." +
+    "Spawn a background subagent: a headless pi agent with its own context window. Spawning starts work in the background and returns an id immediately. You can message, inspect, wait for, or cancel the subagent. Its result is delivered automatically when it settles. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. Costly to start; prefer doing small or context-dependent work yourself. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once." +
     scopedModels
   );
 }
@@ -16,6 +16,7 @@ export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
 
 /** Guides the parent model to delegate standalone tasks and avoid unnecessary blocking waits. */
 export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
+  "Spawning a subagent costs a full context spin-up, so do small or tightly coupled tasks yourself. Delegate only when the work is independent of your context and you need parallel work, a smaller context for yourself, or an independent second opinion. Validate returned work before relying on it.",
   "Use subagent_spawn to delegate tasks that can run in the background. Give the child enough context to start, and invite it to ask_parent for clarification, decisions, or missing context that could improve the result.",
   "After subagent_spawn, keep working; results arrive automatically. Use subagent_message, subagent_check, subagent_wait, or subagent_cancel whenever needed; call subagent_wait when you cannot proceed without the result.",
   "Use subagent_message to steer a subagent or answer its pending question. Use ask_user first only when the answer requires the user's input.",
@@ -27,8 +28,8 @@ export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
     "Task prompt for the subagent. Include enough context, file paths, and expected output to start; it can ask_parent for clarification or missing context.",
   name: "Short human-readable name for this subagent, shown in listings and the UI",
   workingDir: "Working directory (default: current working directory)",
-  model: '"provider/model-id" or bare model id. Omit to inherit the current model.',
-  reasoningEffort: "Reasoning effort (pi thinking level). Omit to inherit the current level.",
+  model: '"provider/model-id" or bare model id. Omit to inherit the current model; pick another only when the task clearly needs it (for example, a stronger model for hard reasoning).',
+  reasoningEffort: "Reasoning effort (pi thinking level). Omit to inherit the current level; lower it for routine work, raise it for ambiguous or high-risk work.",
 };
 
 /** Builds the subagent_spawn result that tells the parent model how to continue or inspect the child. */

@@ -8,7 +8,6 @@ Require `$1` to be a full GitHub pull request URL. If it is missing or invalid, 
 
 Before any `git` or `gh` command, read `~/skills/skills/git-workflow/SKILL.md`. Also read:
 - `~/skills/skills/code-review/SKILL.md`
-- `~/skills/skills/subagents/SKILL.md`
 
 Resolve the active Claude Marketplace Go reviewer from `~/.claude/plugins/installed_plugins.json` with:
 ```sh
