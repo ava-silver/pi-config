@@ -1,0 +1,8 @@
+{
+  "name": "pi-scripts",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

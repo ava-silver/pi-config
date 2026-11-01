@@ -70,10 +70,11 @@ const hostModules: Record<string, string> = {
 };
 const hostPlugin: Bun.BunPlugin = {
   name: "host-modules",
-  setup: (b) =>
+  setup: (b) => {
     b.onResolve({ filter: /^(@earendil-works\/pi-(coding-agent|tui|agent-core|ai)(\/.*)?|typebox(\/.*)?)$/ }, (a) =>
       a.importer.startsWith(EXT) ? { path: Bun.resolveSync(hostModules[a.path] ?? a.path, PKG) } : undefined,
-    ),
+    );
+  },
 };
 
 const build = async (name: string, compiledIn: Candidate[]) => {
