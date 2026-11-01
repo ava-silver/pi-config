@@ -29,7 +29,6 @@ repos:
         files: ^extensions/.*\.(cjs|js|json|jsonc|jsx|mjs|ts|tsx)$
       - id: validate-skill-metadata
         name: validate skill metadata
-        entry: python3 scripts/validate_skill_metadata.py
-        language: python
-        additional_dependencies: [PyYAML==6.0.2]
+        entry: bun scripts/validate-skills.ts
+        language: system
         files: ^skills/[^/]+/SKILL\.md$
