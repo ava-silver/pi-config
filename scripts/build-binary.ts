@@ -22,10 +22,6 @@ const arg = (name: string) => {
 const OUT = arg("--out") ?? join(HOME, ".pi/binary");
 const only = arg("--only");
 
-// Extensions that stay discoverable from disk.
-//  - web-search lazily imports pi-web-access by path; compiling it in adds ~20 MB and no startup gain.
-const KEEP_ON_DISK = new Set(["web-search.ts"]);
-
 type Candidate = { id: string; rel: string };
 
 const disabledExtensions = async (): Promise<Set<string>> => {
@@ -135,7 +131,8 @@ if (process.argv.includes("--if-stale") && existsSync(stampPath) && readFileSync
   process.exit(0);
 }
 
-// Start a binary in RPC mode and list its command names; Pi reports extension load errors on stderr.
+// Start a binary in RPC mode and poll its command names until they stop changing (extensions can register late,
+// e.g. web-search loads pi-web-access in the background). Pi reports extension load errors on stderr.
 const rpcCommands = async (bin: string): Promise<{ names: string[]; stderr: string }> => {
   const proc = Bun.spawn([bin, "--offline", "--mode", "rpc", "--no-session"], {
     stdin: "pipe",
@@ -143,31 +140,40 @@ const rpcCommands = async (bin: string): Promise<{ names: string[]; stderr: stri
     stderr: "pipe",
     cwd: tmpdir(),
   });
-  proc.stdin.write('{"id":"1","type":"get_commands"}\n');
-  proc.stdin.flush();
   const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
-  const deadline = Date.now() + 30_000;
+  const snapshots: string[][] = [];
   let buffer = "";
-  const find = (): string[] | undefined =>
-    buffer
-      .split("\n")
-      .flatMap((line) => {
-        try {
-          const msg = JSON.parse(line);
-          return msg.type === "response" && msg.id === "1" ? [msg.data.commands.map((c: { name: string }) => c.name)] : [];
-        } catch {
-          return [];
+  const readSnapshots = () => {
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    lines.forEach((line) => {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === "response" && msg.command === "get_commands") {
+          snapshots.push(msg.data.commands.map((c: { name: string }) => c.name).sort());
         }
-      })[0];
-  let names: string[] | undefined;
-  while (!(names = find()) && Date.now() < deadline) {
-    const chunk = await Promise.race([reader.read(), Bun.sleep(1_000).then(() => undefined)]);
+      } catch {
+        // Not a JSON response line.
+      }
+    });
+  };
+  const settled = () => {
+    const last = snapshots.slice(-3);
+    return last.length === 3 && last.every((names) => names.join() === last[0]?.join());
+  };
+  const deadline = Date.now() + 60_000;
+  while (!settled() && Date.now() < deadline) {
+    proc.stdin.write('{"type":"get_commands"}\n');
+    proc.stdin.flush();
+    const chunk = await Promise.race([reader.read(), Bun.sleep(700).then(() => undefined)]);
     if (chunk?.value) buffer += decoder.decode(chunk.value);
+    readSnapshots();
     if (chunk?.done) break;
+    await Bun.sleep(300);
   }
   proc.kill();
-  return { names: names ?? [], stderr: await new Response(proc.stderr).text() };
+  return { names: snapshots.at(-1) ?? [], stderr: await new Response(proc.stderr).text() };
 };
 
 // pi must expose exactly what pi-dev discovers from disk: a missing extension or a double load both show up.
@@ -190,7 +196,7 @@ mkdirSync(OUT, { recursive: true });
 copyAssets();
 
 const disabled = await disabledExtensions();
-const compiledIn = discover().filter((c) => !disabled.has(c.rel) && !KEEP_ON_DISK.has(c.id));
+const compiledIn = discover().filter((c) => !disabled.has(c.rel));
 
 if (only !== "pi") await build("pi-dev", []);
 if (only !== "pi-dev") {
