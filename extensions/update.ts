@@ -4,9 +4,10 @@
 //   3. bun update --all --latest --all-deps
 //   4. skip post-steps if lockfile unchanged (nothing to do)
 //   5. install the pinned pi packages globally
-//   6. post-check: bun run verify
-//   7. smoke test: write a unique token to a temp file, ask pi to read it
-//      back via --print --no-session, assert the token appears in output
+//   6. rebuild the compiled pi binaries (scripts/build-binary.ts)
+//   7. post-check: bun run verify
+//   8. smoke test: write a unique token to a temp file, ask `pi` (from PATH)
+//      to read it back via --print --no-session, assert the token appears
 //
 // All steps run in a detached background process. Results surface via
 // ctx.ui.notify (success/no-change) or pi.sendUserMessage (failure, so
@@ -46,14 +47,8 @@ export default function updateExtension(pi: ExtensionAPI): void {
         /* no stale log */
       }
 
-      const extensionsDir = import.meta.dirname;
-      const bunBin = process.execPath;
-      const piEntry = process.argv[1];
-
-      if (!piEntry) {
-        ctx.ui.notify("/update: could not determine Pi entrypoint", "error");
-        return;
-      }
+      const extensionsDir = join(getAgentDir(), "extensions");
+      const buildScript = join(getAgentDir(), "scripts", "build-binary.ts");
 
       if (ctx.mode === "tui") {
         registerTransientSegment(SEGMENT_KEY, {
@@ -67,14 +62,14 @@ export default function updateExtension(pi: ExtensionAPI): void {
 
       // Shell script runs entirely detached. Positional args:
       //   $1 = resultPath  $2 = logPath  $3 = extensionsDir
-      //   $4 = bunBin      $5 = piEntry  $6 = smokeFile  $7 = smokeToken
+      //   $4 = bunBin      $5 = buildScript  $6 = smokeFile  $7 = smokeToken
       const script = `
 status=no_changes
 result=$1
 log=$2
 extensions_dir=$3
 bun_bin=$4
-pi_entry=$5
+build_script=$5
 smoke_file=$6
 smoke_token=$7
 
@@ -119,6 +114,13 @@ if ! "$bun_bin" install -g --ignore-scripts $global_pkgs >> "$log" 2>&1; then
   exit 0
 fi
 
+# The compiled pi binaries embed Pi and the stable extensions, so rebuild them against the new install.
+# The build swaps files in atomically, so this Pi process keeps running its old binary.
+if ! "$bun_bin" "$build_script" >> "$log" 2>&1; then
+  status=build_failed
+  exit 0
+fi
+
 # Post-check: make sure the upgrade didn't break anything
 if ! (cd "$extensions_dir" && "$bun_bin" run verify) >> "$log" 2>&1; then
   status=postcheck_failed
@@ -129,7 +131,7 @@ fi
 # This validates the full round-trip: provider responds, read tool is
 # available and executes, result comes back coherently.
 printf '%s' "$smoke_token" > "$smoke_file"
-smoke_output=$("$bun_bin" "$pi_entry" --print --no-session \
+smoke_output=$(pi --print --no-session \
   "Read the file $smoke_file and reply with only its exact contents, nothing else." \
   2>>"$log") || true
 
@@ -143,7 +145,7 @@ fi
 
       const child = spawn(
         "/bin/sh",
-        ["-c", script, "pi-update", resultPath, logPath, extensionsDir, bunBin, piEntry, smokeFile, smokeToken],
+        ["-c", script, "pi-update", resultPath, logPath, extensionsDir, "bun", buildScript, smokeFile, smokeToken],
         { detached: true, stdio: "ignore" },
       );
       child.once("error", () => {
@@ -197,9 +199,11 @@ fi
               ? "post-update check"
               : result === "global_install_failed"
                 ? "global pi install"
-                : result === "smoke_failed"
-                  ? "smoke test"
-                  : result;
+                : result === "build_failed"
+                  ? "binary build"
+                  : result === "smoke_failed"
+                    ? "smoke test"
+                    : result;
 
         const msg = [
           `/update failed at: ${label}`,
