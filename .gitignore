@@ -4,12 +4,10 @@
 !/.gitignore
 !/.pre-commit-config.yaml
 !/AGENTS.md
-!/justfile
 !/keybindings.json
-!/models.json
 !/pi-auto-rename.json
 !/README.md
-!/settings.json
+!/settings.example.json
 !/setup.sh
 !/web-search.json
 

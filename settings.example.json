@@ -1,0 +1,7 @@
+{
+  "defaultThinkingLevel": "medium",
+  "quietStartup": true,
+  "hideThinkingBlock": false,
+  "npmCommand": ["bun"],
+  "packages": ["npm:pi-btw"]
+}

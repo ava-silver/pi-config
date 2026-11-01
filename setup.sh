@@ -6,6 +6,8 @@ config_dir="${PI_CODING_AGENT_DIR:-${XDG_CONFIG_HOME:+${XDG_CONFIG_HOME}/pi}}"
 config_dir="${config_dir:-$HOME/.pi}"
 mkdir -p "$config_dir"
 ln -sfn "$repo_dir/web-search.json" "$config_dir/web-search.json"
+[[ -e "$repo_dir/settings.json" || -L "$repo_dir/settings.json" ]] \
+  || cp "$repo_dir/settings.example.json" "$repo_dir/settings.json"
 
 if command -v bun >/dev/null 2>&1; then
   (cd "$repo_dir/extensions" && bun install --frozen-lockfile)
