@@ -22,10 +22,9 @@ const arg = (name: string) => {
 const OUT = arg("--out") ?? join(HOME, ".pi/binary");
 const only = arg("--only");
 
-// Extensions that stay discoverable from disk:
-//  - fff spawns its own worker.ts as a child process.
+// Extensions that stay discoverable from disk.
 //  - web-search lazily imports pi-web-access by path; compiling it in adds ~20 MB and no startup gain.
-const KEEP_ON_DISK = new Set(["fff", "web-search.ts"]);
+const KEEP_ON_DISK = new Set(["web-search.ts"]);
 
 type Candidate = { id: string; rel: string };
 

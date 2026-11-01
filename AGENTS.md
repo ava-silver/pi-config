@@ -31,7 +31,7 @@
 - When authentication is required or expired, start the interactive authentication flow and let me complete it instead of stopping.
 - Run commands needing AWS auth through `aws-sso-exec` (for example, `aws-sso-exec aws sts get-caller-identity`). It uses native AWS SSO and opens a browser for the user to auth only when required.
 - Use Colima instead of Docker.
-- Use the `ffgrep` tool or `rg` instead of `grep`
+- Use the `grep` tool or `rg` instead of shell `grep`
 - Use `jq` for querying json files
 - Use `mq` for querying large markdown files
 - Start with the narrowest local command that can answer the question, and time-bound potentially long-running commands.

@@ -10,7 +10,6 @@
     "test": "bun test --parallel --only-failures"
   },
   "dependencies": {
-    "@ff-labs/fff-bun": "0.11.0",
     "acorn": "8.19.0",
     "effect": "4.0.6",
     "js-tiktoken": "^1.0.21",
