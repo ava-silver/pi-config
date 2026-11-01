@@ -116,72 +116,91 @@ function formatGrep(result: WorkerGrepResult): string {
   return truncateGrepOutput(lines.join("\n"));
 }
 
+type WorkerResponse = { id: number; ok: boolean; result?: unknown; error?: unknown };
+type PendingRequest = { resolve: (value: unknown) => void; reject: (error: Error) => void };
+
+// A long-lived worker process keeps a warm index per workspace. Native searches block, so they run off the UI
+// thread, and a search that outlives its timeout is killed and replaced.
 class FffWorker {
-  private children = new Set<ChildProcess>();
+  private child: ChildProcess | undefined;
+  private pending = new Map<number, PendingRequest>();
   private nextId = 0;
 
-  stop(_error?: Error): void {
-    for (const child of this.children) killWorker(child);
-    this.children.clear();
+  stop(error = new Error("FFF worker stopped.")): void {
+    const child = this.child;
+    this.child = undefined;
+    if (child) killWorker(child);
+    this.pending.forEach((request) => request.reject(error));
+    this.pending.clear();
   }
 
-  async request<T>(request: Record<string, unknown>, signal: AbortSignal, timeout: number): Promise<T> {
-    if (signal.aborted) throw new Error("FFF search cancelled.");
-    const id = ++this.nextId;
+  private start(): ChildProcess {
+    if (this.child) return this.child;
     const child = spawn("bun", [WORKER_PATH], {
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "ignore"],
     });
-    this.children.add(child);
     child.stdout.setEncoding("utf8");
+    let buffer = "";
+    child.stdout.on("data", (chunk: string) => {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      lines.forEach((line) => this.handleLine(line));
+    });
+    const stopIfCurrent = (error: Error) => {
+      if (this.child === child) this.stop(error);
+    };
+    child.once("error", stopIfCurrent);
+    child.once("exit", () => stopIfCurrent(new Error("FFF worker stopped.")));
+    child.stdin.on("error", stopIfCurrent);
+    child.unref();
+    this.child = child;
+    return child;
+  }
 
+  private handleLine(line: string): void {
+    try {
+      const { id, ok, result, error } = JSON.parse(line) as WorkerResponse;
+      const request = this.pending.get(id);
+      this.pending.delete(id);
+      if (ok) request?.resolve(result);
+      else request?.reject(new Error(typeof error === "string" ? error : "FFF search failed."));
+    } catch {
+      this.stop(new Error("FFF worker returned invalid output."));
+    }
+  }
+
+  request<T>(request: Record<string, unknown>, signal: AbortSignal, timeout: number): Promise<T> {
+    if (signal.aborted) return Promise.reject(new Error("FFF search cancelled."));
+    const id = ++this.nextId;
     return new Promise<T>((resolve, reject) => {
-      let buffer = "";
-      let settled = false;
-      const finish = (error?: Error, result?: unknown) => {
-        if (settled) return;
-        settled = true;
+      const cleanup = () => {
         clearTimeout(timer);
         signal.removeEventListener("abort", abort);
-        this.children.delete(child);
-        if (!child.killed) killWorker(child);
-        if (error) reject(error);
-        else resolve(result as T);
+        this.pending.delete(id);
       };
-      const timer = setTimeout(() => finish(new Error("FFF search timed out.")), timeout);
-      const abort = () => finish(new Error("FFF search cancelled."));
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("FFF search timed out."));
+        this.stop(new Error("FFF worker restarted after a timeout."));
+      }, timeout);
+      const abort = () => {
+        cleanup();
+        reject(new Error("FFF search cancelled."));
+      };
       signal.addEventListener("abort", abort, { once: true });
-      child.stdout.on("data", (chunk: string) => {
-        buffer += chunk;
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          try {
-            const message = JSON.parse(line) as { id: unknown; ok: unknown; result?: unknown; error?: unknown };
-            if (typeof message.id !== "number" || typeof message.ok !== "boolean")
-              throw new Error("Invalid FFF worker output.");
-            if (message.id !== id) continue;
-            finish(
-              message.ok
-                ? undefined
-                : new Error(typeof message.error === "string" ? message.error : "FFF search failed."),
-              message.result,
-            );
-          } catch {
-            finish(new Error("FFF worker returned invalid output."));
-          }
-        }
+      this.pending.set(id, {
+        resolve: (value) => {
+          cleanup();
+          resolve(value as T);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
       });
-      child.once("error", (error) => finish(error));
-      child.once("exit", () => finish(new Error("FFF worker stopped.")));
-      if (!child.stdin) {
-        finish(new Error("FFF worker stdin is unavailable."));
-        return;
-      }
-      child.stdin.once("error", (error) => finish(error));
-      child.stdin.write(`${JSON.stringify({ id, ...request })}\n`, (error) => {
-        if (error) finish(error);
-      });
+      this.start().stdin?.write(`${JSON.stringify({ id, ...request })}\n`);
     });
   }
 }
@@ -249,7 +268,8 @@ export default function fff(pi: ExtensionAPI): void {
           limit: limit(params.limit),
           context: Math.min(20, Math.max(0, Math.floor(params.context ?? 0))),
           mode: params.regex ? "regex" : "plain",
-          timeoutMs: timeoutMs(params.timeout),
+          // Let the search stop itself before the request timeout replaces the worker.
+          timeoutMs: Math.floor(timeoutMs(params.timeout) * 0.8),
         },
         signal ?? new AbortController().signal,
         timeoutMs(params.timeout),

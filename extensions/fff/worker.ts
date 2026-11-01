@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { FileFinder, type GrepMode } from "@ff-labs/fff-bun";
@@ -15,27 +16,55 @@ type Request = {
   timeoutMs?: number;
 };
 
-let finder: FileFinder | undefined;
-let finderCwd: string | undefined;
+// One long-lived process keeps a warm index per workspace; it exits when idle to free memory.
+const MAX_FINDERS = 3;
+const IDLE_MS = 5 * 60_000;
+// `scanned` resolves when the file list is ready (enough for find); `ready` also waits for the content index grep uses.
+type IndexedFinder = { scanned: Promise<FileFinder>; ready: Promise<FileFinder> };
+const finders = new Map<string, IndexedFinder>();
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
-async function getFinder(cwd: string): Promise<FileFinder> {
-  if (finder && finderCwd === cwd && !finder.isDestroyed) return finder;
-  finder?.destroy();
-  const created = FileFinder.create({
-    basePath: cwd,
-    aiMode: true,
-    disableWatch: true,
-    followSymlinks: false,
-  });
-  if (!created.ok) throw new Error(created.error);
-  finder = created.value;
-  finderCwd = cwd;
-  await finder.waitForScan(15_000);
-  return finder;
+function destroy({ scanned }: IndexedFinder): void {
+  void scanned.then((finder) => finder.destroy()).catch(() => {});
 }
 
-function respond(id: number, result: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify({ id, ...result })}\n`);
+function destroyAll(): void {
+  finders.forEach(destroy);
+  finders.clear();
+}
+
+function createFinder(cwd: string): IndexedFinder {
+  // The file watcher reports resolved paths, so index the resolved directory (macOS /tmp is a symlink).
+  const created = FileFinder.create({ basePath: realpathSync(cwd), aiMode: true, followSymlinks: false });
+  if (!created.ok) {
+    const failed = Promise.reject(new Error(created.error));
+    return { scanned: failed, ready: failed };
+  }
+  const finder = created.value;
+  const scanned = finder.waitForScan(15_000).then(() => finder);
+  return { scanned, ready: scanned.then(() => finder.waitForIndexReady(15_000)).then(() => finder) };
+}
+
+function getFinder(cwd: string, needsContentIndex: boolean): Promise<FileFinder> {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => process.exit(0), IDLE_MS);
+  const cached = finders.get(cwd) ?? createFinderEntry(cwd);
+  finders.delete(cwd);
+  finders.set(cwd, cached); // most recently used last
+  return needsContentIndex ? cached.ready : cached.scanned;
+}
+
+function createFinderEntry(cwd: string): IndexedFinder {
+  if (finders.size >= MAX_FINDERS) {
+    const oldest = finders.keys().next().value as string;
+    destroy(finders.get(oldest) as IndexedFinder);
+    finders.delete(oldest);
+  }
+  const created = createFinder(cwd);
+  const forget = () => finders.delete(cwd);
+  created.scanned.catch(forget);
+  created.ready.catch(() => {});
+  return created;
 }
 
 function externalPath(path: string, cwd: string): string {
@@ -58,7 +87,7 @@ async function search({ cwd, kind, query, pattern, limit, context, mode, timeout
     });
   }
 
-  const activeFinder = await getFinder(cwd);
+  const activeFinder = await getFinder(cwd, kind === "grep");
   if (kind === "find") {
     const result = activeFinder.fileSearch(query, { pageSize: limit });
     if (!result.ok) throw new Error(result.error);
@@ -217,6 +246,10 @@ async function searchContentsWithRg({
   };
 }
 
+function respond(id: number, result: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify({ id, ...result })}\n`);
+}
+
 let buffer = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk: string) => {
@@ -231,5 +264,6 @@ process.stdin.on("data", (chunk: string) => {
       .catch((error) => respond(request.id, { ok: false, error: String(error) }));
   }
 });
-
-process.on("exit", () => finder?.destroy());
+// Exit with the parent so a long-lived worker is never orphaned.
+process.stdin.on("end", () => process.exit(0));
+process.on("exit", destroyAll);
