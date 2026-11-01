@@ -1,4 +1,12 @@
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: ^skills/
+      - id: end-of-file-fixer
+        files: ^skills/
+
   - repo: local
     hooks:
       - id: fmt-pi-extensions
@@ -19,3 +27,9 @@ repos:
         language: system
         pass_filenames: false
         files: ^extensions/.*\.(cjs|js|json|jsonc|jsx|mjs|ts|tsx)$
+      - id: validate-skill-metadata
+        name: validate skill metadata
+        entry: python3 scripts/validate_skill_metadata.py
+        language: python
+        additional_dependencies: [PyYAML==6.0.2]
+        files: ^skills/[^/]+/SKILL\.md$

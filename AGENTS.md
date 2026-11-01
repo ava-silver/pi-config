@@ -39,4 +39,4 @@
 ## Pi config
 
 - Pi loads extensions, prompts, and themes from `~/.pi/agent/` directly; use `/reload` after changing them.
-- All skills live in `~/skills/skills/` (also loads `~/dd/claude-marketplace/serverless/skills`)
+- All skills live in `~/.pi/agent/skills/` (also loads `~/dd/claude-marketplace/serverless/skills`)

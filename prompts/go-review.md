@@ -6,8 +6,8 @@ Review PR `$1` using two independent Sol subagents, then consolidate a draft for
 
 Require `$1` to be a full GitHub pull request URL. If it is missing or invalid, ask for it and stop.
 
-Before any `git` or `gh` command, read `~/skills/skills/git-workflow/SKILL.md`. Also read:
-- `~/skills/skills/code-review/SKILL.md`
+Before any `git` or `gh` command, read `~/.pi/agent/skills/git-workflow/SKILL.md`. Also read:
+- `~/.pi/agent/skills/code-review/SKILL.md`
 
 Resolve the active Claude Marketplace Go reviewer from `~/.claude/plugins/installed_plugins.json` with:
 ```sh
@@ -40,4 +40,4 @@ Then stop. Ask me to bulk-select findings to include, for example `1, 3-5`, or `
 
 After I select findings, show the exact proposed inline comments and a one- or two-sentence review summary. Ask for explicit confirmation. Only after I confirm, offer to post the selected comments. Default to a `COMMENT` review, but let me choose `REQUEST_CHANGES` or `APPROVE`.
 
-For posting, read `~/skills/skills/post-review/SKILL.md` and follow it exactly. Never post findings that I did not select.
+For posting, read `~/.pi/agent/skills/post-review/SKILL.md` and follow it exactly. Never post findings that I did not select.

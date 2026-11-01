@@ -11,6 +11,12 @@
 !/setup.sh
 !/web-search.json
 
+!/scripts/
+!/scripts/**
+
+!/skills/
+!/skills/**
+
 !/extensions/
 !/extensions/**
 /extensions/node_modules/

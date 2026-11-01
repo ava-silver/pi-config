@@ -31,6 +31,10 @@ The setup script installs extension dependencies and creates `settings.json` fro
 
 The `.gitignore` ignores new paths by default to prevent runtime state from being committed accidentally. Add an explicit exception when you create a new tracked top-level file or directory.
 
+## Skills
+
+Skills live in `skills/<name>/SKILL.md`, which Pi loads from the agent directory automatically. A pre-commit hook validates their front matter.
+
 ## Settings
 
 `settings.json` is gitignored because Pi rewrites it at runtime. `setup.sh` copies `settings.example.json` to `settings.json` if it is missing. To keep your own settings under version control, symlink `settings.json` to a file in another repository before you run `setup.sh`.
