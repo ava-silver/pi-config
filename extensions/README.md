@@ -33,10 +33,10 @@
 
 ```sh
 bun install --frozen-lockfile
-bun run check
+bun run verify
 ```
 
-Use `bun run format` to apply formatting. Restart Pi or run `/reload` after changing extension code.
+Use `bun fmt` to apply formatting. Restart Pi or run `/reload` after changing extension code.
 
 Bun manages dependencies and commands. Tests use Node because the workflow sandbox relies on Node's permission model.
 

@@ -145,4 +145,4 @@ setup:
 
 # Format, lint, typecheck and test the extensions.
 check:
-    cd extensions && bun run check
+    cd extensions && bun run verify

@@ -1,10 +1,10 @@
 // `/update` -- background update workflow:
 //   1. auto-format extensions (best-effort)
-//   2. pre-flight: sync node_modules to bun.lock, then bun run check
+//   2. pre-flight: sync node_modules to bun.lock, then bun run verify
 //   3. bun update --all --latest --all-deps
 //   4. skip post-steps if lockfile unchanged (nothing to do)
 //   5. install the pinned pi packages globally
-//   6. post-check: bun run check
+//   6. post-check: bun run verify
 //   7. smoke test: write a unique token to a temp file, ask pi to read it
 //      back via --print --no-session, assert the token appears in output
 //
@@ -86,10 +86,10 @@ finish() {
 trap finish EXIT HUP INT TERM
 
 # Auto-format (best-effort: fixes trivial whitespace before the check gate)
-(cd "$extensions_dir" && "$bun_bin" run format) >> "$log" 2>&1
+(cd "$extensions_dir" && "$bun_bin" fmt) >> "$log" 2>&1
 
 # Pre-flight: node_modules can lag bun.lock after a git pull, so sync it first
-if ! (cd "$extensions_dir" && "$bun_bin" install --frozen-lockfile && "$bun_bin" run check) >> "$log" 2>&1; then
+if ! (cd "$extensions_dir" && "$bun_bin" install --frozen-lockfile && "$bun_bin" run verify) >> "$log" 2>&1; then
   status=preflight_failed
   exit 0
 fi
@@ -120,7 +120,7 @@ if ! "$bun_bin" install -g --ignore-scripts $global_pkgs >> "$log" 2>&1; then
 fi
 
 # Post-check: make sure the upgrade didn't break anything
-if ! (cd "$extensions_dir" && "$bun_bin" run check) >> "$log" 2>&1; then
+if ! (cd "$extensions_dir" && "$bun_bin" run verify) >> "$log" 2>&1; then
   status=postcheck_failed
   exit 0
 fi

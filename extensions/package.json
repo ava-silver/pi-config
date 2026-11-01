@@ -4,13 +4,10 @@
   "description": "Local Pi extensions",
   "type": "module",
   "scripts": {
-    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test",
-    "format": "oxfmt --write .",
-    "format:check": "oxfmt --check .",
+    "verify": "bun fmt --check && bun run lint && bun check && bun run test",
     "lint": "oxlint --quiet --type-aware --report-unused-disable-directives --ignore-pattern trajectory .",
     "prepare": "effect-tsgo patch",
-    "test": "bun test --parallel --only-failures",
-    "typecheck": "tsc --noEmit"
+    "test": "bun test --parallel --only-failures"
   },
   "dependencies": {
     "@ff-labs/fff-bun": "0.11.0",
@@ -28,7 +25,6 @@
     "@effect/tsgo": "0.62.0",
     "@oxlint/plugins": "1.90.0",
     "@types/node": "26.6.5",
-    "oxfmt": "0.75.0",
     "oxlint": "1.90.0",
     "oxlint-tsgolint": "7.0.2005",
     "typebox": "1.4.3",

@@ -28,8 +28,10 @@ export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
     "Task prompt for the subagent. Include enough context, file paths, and expected output to start; it can ask_parent for clarification or missing context.",
   name: "Short human-readable name for this subagent, shown in listings and the UI",
   workingDir: "Working directory (default: current working directory)",
-  model: '"provider/model-id" or bare model id. Omit to inherit the current model; pick another only when the task clearly needs it (for example, a stronger model for hard reasoning).',
-  reasoningEffort: "Reasoning effort (pi thinking level). Omit to inherit the current level; lower it for routine work, raise it for ambiguous or high-risk work.",
+  model:
+    '"provider/model-id" or bare model id. Omit to inherit the current model; pick another only when the task clearly needs it (for example, a stronger model for hard reasoning).',
+  reasoningEffort:
+    "Reasoning effort (pi thinking level). Omit to inherit the current level; lower it for routine work, raise it for ambiguous or high-risk work.",
 };
 
 /** Builds the subagent_spawn result that tells the parent model how to continue or inspect the child. */

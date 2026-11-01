@@ -1,12 +1,12 @@
 repos:
   - repo: local
     hooks:
-      - id: oxfmt-pi-extensions
-        name: oxfmt pi extensions
-        entry: extensions/node_modules/.bin/oxfmt --write --no-error-on-unmatched-pattern
+      - id: fmt-pi-extensions
+        name: format pi extensions
+        entry: bun --cwd extensions fmt
         language: system
+        pass_filenames: false
         files: ^extensions/.*\.(cjs|js|json|jsonc|jsx|mjs|ts|tsx)$
-        exclude: ^extensions/package\.json$
       - id: oxlint-pi-extensions
         name: oxlint pi extensions
         entry: bun --cwd extensions run lint
@@ -15,7 +15,7 @@ repos:
         files: ^extensions/.*\.(cjs|js|jsx|mjs|ts|tsx)$
       - id: typecheck-pi-extensions
         name: typecheck pi extensions
-        entry: bun --cwd extensions run typecheck
+        entry: bun --cwd extensions check
         language: system
         pass_filenames: false
         files: ^extensions/.*\.(cjs|js|json|jsonc|jsx|mjs|ts|tsx)$
