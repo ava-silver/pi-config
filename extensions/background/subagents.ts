@@ -18,7 +18,6 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
@@ -33,6 +32,7 @@ import {
   formatElapsed,
   latestText,
   REASONING_EFFORTS,
+  type ReasoningEffort,
   type PersistedSubagent,
   type SubagentSnapshot,
 } from "./src/domain.ts";
@@ -431,7 +431,9 @@ function registerSpawnTool(pi: ExtensionAPI, controller: SubagentController) {
           }),
         ),
         reasoning_effort: Type.Optional(
-          StringEnum(REASONING_EFFORTS, {
+          Type.Unsafe<ReasoningEffort>({
+            type: "string",
+            enum: [...REASONING_EFFORTS],
             description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
           }),
         ),

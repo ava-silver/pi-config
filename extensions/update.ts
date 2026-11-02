@@ -1,7 +1,7 @@
 // `/update` -- background update workflow:
 //   1. auto-format extensions (best-effort)
 //   2. pre-flight: sync node_modules to bun.lock, then bun run verify
-//   3. bun update --all --latest --all-deps
+//   3. bun update --latest
 //   4. skip post-steps if lockfile unchanged (nothing to do)
 //   5. install the pinned pi packages globally
 //   6. rebuild the compiled pi binaries (scripts/build-binary.ts)
@@ -94,7 +94,10 @@ lockfile="$extensions_dir/bun.lock"
 mtime_before=$(stat -f %m "$lockfile" 2>/dev/null || stat -c %Y "$lockfile" 2>/dev/null || echo 0)
 
 # Upgrade all deps including devDependencies, allow major bumps
-(cd "$extensions_dir" && "$bun_bin" update --all --latest --all-deps) >> "$log" 2>&1
+if ! (cd "$extensions_dir" && "$bun_bin" update --latest) >> "$log" 2>&1; then
+  status=update_failed
+  exit 0
+fi
 
 mtime_after=$(stat -f %m "$lockfile" 2>/dev/null || stat -c %Y "$lockfile" 2>/dev/null || echo 0)
 

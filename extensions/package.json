@@ -11,19 +11,19 @@
   },
   "dependencies": {
     "acorn": "8.19.0",
-    "effect": "4.0.6",
+    "effect": "4.1.2",
     "js-tiktoken": "^1.0.21",
     "kokoro-js": "1.2.1",
-    "pi-web-access": "0.45.0"
+    "pi-web-access": "0.46.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.4.0",
-    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@earendil-works/pi-server": "1.1.0",
-    "@earendil-works/pi-tui": "1.4.0",
-    "@effect/tsgo": "0.62.0",
+    "@earendil-works/pi-tui": "1.5.0",
+    "@effect/tsgo": "0.64.1",
     "@oxlint/plugins": "1.90.0",
-    "@types/node": "26.6.5",
+    "@types/node": "26.6.6",
     "oxlint": "1.90.0",
     "oxlint-tsgolint": "7.0.2005",
     "typebox": "1.4.3",
