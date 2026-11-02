@@ -134,18 +134,17 @@ if (process.argv.includes("--if-stale") && existsSync(stampPath) && readFileSync
 
 // Start a binary in RPC mode and poll its command names until they stop changing (extensions can register late,
 // e.g. web-search loads pi-web-access in the background). Pi reports extension load errors on stderr.
-const rpcCommands = async (bin: string): Promise<{ names: string[]; stderr: string }> => {
+const rpcCommands = async (bin: string): Promise<{ names: string[]; stderr: string; exitCode: number | null }> => {
   const proc = Bun.spawn([bin, "--offline", "--mode", "rpc", "--no-session"], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
     cwd: tmpdir(),
   });
-  const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
   const snapshots: string[][] = [];
   let buffer = "";
-  const readSnapshots = () => {
+  const readLines = () => {
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";
     lines.forEach((line) => {
@@ -159,22 +158,26 @@ const rpcCommands = async (bin: string): Promise<{ names: string[]; stderr: stri
       }
     });
   };
+  // One reader consumes stdout for the whole run, so a slow response is never dropped.
+  void (async () => {
+    for await (const chunk of proc.stdout) {
+      buffer += decoder.decode(chunk, { stream: true });
+      readLines();
+    }
+  })();
   const settled = () => {
     const last = snapshots.slice(-3);
     return last.length === 3 && last.every((names) => names.join() === last[0]?.join());
   };
-  const deadline = Date.now() + 60_000;
-  while (!settled() && Date.now() < deadline) {
+  const deadline = Date.now() + 30_000;
+  while (!settled() && proc.exitCode === null && Date.now() < deadline) {
     proc.stdin.write('{"type":"get_commands"}\n');
     proc.stdin.flush();
-    const chunk = await Promise.race([reader.read(), Bun.sleep(700).then(() => undefined)]);
-    if (chunk?.value) buffer += decoder.decode(chunk.value);
-    readSnapshots();
-    if (chunk?.done) break;
-    await Bun.sleep(300);
+    await Bun.sleep(700);
   }
+  const exitCode = proc.exitCode;
   proc.kill();
-  return { names: snapshots.at(-1) ?? [], stderr: await new Response(proc.stderr).text() };
+  return { names: snapshots.at(-1) ?? [], stderr: await new Response(proc.stderr).text(), exitCode };
 };
 
 // pi must expose exactly what pi-dev discovers from disk: a missing extension or a double load both show up.
@@ -182,7 +185,11 @@ const verify = async () => {
   const [pi, dev] = await Promise.all([rpcCommands(join(OUT, "pi")), rpcCommands(join(OUT, "pi-dev"))]);
   const sorted = (xs: string[]) => [...xs].sort().join(",");
   const problems = [
-    ...(pi.names.length === 0 ? ["pi returned no commands"] : []),
+    ...Object.entries({ pi, "pi-dev": dev }).flatMap(([name, result]) =>
+      result.names.length === 0
+        ? [`${name} returned no commands (exit code ${result.exitCode}); stderr:\n${result.stderr.slice(-2000)}`]
+        : [],
+    ),
     ...(/Failed to load extension/.test(pi.stderr) ? [`pi reported load errors:\n${pi.stderr}`] : []),
     ...(sorted(pi.names) !== sorted(dev.names) ? [`commands differ:\n pi:     ${sorted(pi.names)}\n pi-dev: ${sorted(dev.names)}`] : []),
   ];
