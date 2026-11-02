@@ -6,6 +6,14 @@ interface SearchResult {
   url: string;
 }
 
+interface QueryResultData {
+  query: string;
+  answer: string;
+  results: SearchResult[];
+  error: string | null;
+  provider?: string;
+}
+
 interface FetchedContent {
   url: string;
   title: string;
@@ -30,25 +38,16 @@ interface WebAccessModules {
   storeFetchedContentResult: (id: string, data: Record<string, unknown>) => Record<string, unknown>;
 }
 
-interface QueryResultData {
-  query: string;
-  answer: string;
-  results: SearchResult[];
-  error: string | null;
-  provider?: string;
-}
-
-// The `as string` keeps the type checker out of pi-web-access's untyped sources; Bun and jiti still see literal paths.
 let webAccessModules: Promise<WebAccessModules> | null = null;
 function getWebAccess(): Promise<WebAccessModules> {
   if (!webAccessModules) {
     // Jiti mis-binds transitive Node built-in imports when these TypeScript modules load concurrently.
     webAccessModules = (async () => {
-      const indexModule = await import("../node_modules/pi-web-access/index.ts" as string);
+      const indexModule = await import(new URL("./node_modules/pi-web-access/index.ts", import.meta.url).href);
       // gemini-search.ts is the multi-provider search router (named after Gemini, its original backend)
-      const searchModule = await import("../node_modules/pi-web-access/gemini-search.ts" as string);
-      const extractModule = await import("../node_modules/pi-web-access/extract.ts" as string);
-      const storageModule = await import("../node_modules/pi-web-access/storage.ts" as string);
+      const searchModule = await import(new URL("./node_modules/pi-web-access/gemini-search.ts", import.meta.url).href);
+      const extractModule = await import(new URL("./node_modules/pi-web-access/extract.ts", import.meta.url).href);
+      const storageModule = await import(new URL("./node_modules/pi-web-access/storage.ts", import.meta.url).href);
       return {
         register: indexModule.default,
         search: searchModule.search,

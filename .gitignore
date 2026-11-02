@@ -13,7 +13,6 @@
 
 !/scripts/
 !/scripts/**
-/scripts/node_modules/
 
 !/skills/
 !/skills/**
