@@ -1,10 +1,7 @@
 /* oxlint-disable typescript/no-base-to-string, typescript/unbound-method */
-import { readFileSync, realpathSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-
+import * as agent from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as tui from "@earendil-works/pi-tui";
 
 const TOOL_PATCH = Symbol.for("ava.pi.outputCompaction.tool.v1");
 const CONTAINER_PATCH = Symbol.for("ava.pi.outputCompaction.container.v1");
@@ -449,64 +446,29 @@ function uninstallToolPatch(state: ToolPatchState | undefined): void {
   delete proto[TOOL_PATCH];
 }
 
-function findAgentEntry(entry: string): string | undefined {
-  let directory = dirname(entry);
-  while (true) {
-    try {
-      const packageJson = JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as {
-        name?: string;
-        main?: string;
-      };
-      if (packageJson.name === "@earendil-works/pi-coding-agent") {
-        return resolve(directory, packageJson.main ?? "dist/index.js");
-      }
-    } catch {
-      // Continue toward the filesystem root.
-    }
-    const parent = dirname(directory);
-    if (parent === directory) return undefined;
-    directory = parent;
-  }
+// Extensions import the running Pi's own modules (jiti virtual modules, or the compiled binary's copy), so
+// patching these prototypes affects the UI that is actually rendering.
+const RUNTIME_KEYS = [
+  "AssistantMessageComponent",
+  "ToolExecutionComponent",
+  "Container",
+  "Box",
+  "sliceByColumn",
+  "truncateToWidth",
+  "visibleWidth",
+  "wrapTextWithAnsi",
+];
+
+function isRuntime(host: unknown): host is Runtime {
+  if (typeof host !== "object" || host === null) return false;
+  const available = new Set(Object.keys(host));
+  return RUNTIME_KEYS.every((key) => available.has(key));
 }
 
 async function loadRuntime(): Promise<Runtime> {
-  let cliEntry: string | undefined;
-  if (process.argv[1]) {
-    try {
-      cliEntry = realpathSync(process.argv[1]);
-    } catch {
-      cliEntry = process.argv[1];
-    }
-  }
-
-  let agentEntry = cliEntry ? findAgentEntry(cliEntry) : undefined;
-  for (const candidate of [cliEntry, import.meta.url]) {
-    if (agentEntry || !candidate) break;
-    try {
-      agentEntry = createRequire(candidate).resolve("@earendil-works/pi-coding-agent");
-    } catch {
-      // Try the next resolution root.
-    }
-  }
-  if (!agentEntry) throw new Error("Unable to resolve Pi's runtime package");
-
-  const agent = await import(pathToFileURL(agentEntry).href);
-  const tuiEntry = createRequire(agentEntry).resolve("@earendil-works/pi-tui");
-  const tui = await import(pathToFileURL(tuiEntry).href);
-  if (!agent.AssistantMessageComponent || !agent.ToolExecutionComponent || !tui.Container || !tui.Box) {
-    throw new Error("Pi's output rendering API is unavailable");
-  }
-
-  return {
-    AssistantMessageComponent: agent.AssistantMessageComponent,
-    ToolExecutionComponent: agent.ToolExecutionComponent,
-    Container: tui.Container,
-    Box: tui.Box,
-    sliceByColumn: tui.sliceByColumn,
-    truncateToWidth: tui.truncateToWidth,
-    visibleWidth: tui.visibleWidth,
-    wrapTextWithAnsi: tui.wrapTextWithAnsi,
-  } as Runtime;
+  const host = { ...agent, ...tui };
+  if (!isRuntime(host)) throw new Error("Pi's output rendering API is unavailable");
+  return host;
 }
 
 export default async function (pi: ExtensionAPI) {

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
-import { readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, relative } from "node:path";
-import { homedir } from "node:os";
 import test from "node:test";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -48,35 +47,8 @@ test("Pi SDK packages stay aligned", async () => {
   assert.match(devVersion, /^\d+\.\d+\.\d+$/);
   for (const name of packages) assert.equal(manifest.peerDependencies?.[name], "*");
 
-  // Resolve the globally installed pi package without spawning pi: scan every
-  // `pi` binary on PATH for an embedded module path (present in shell wrappers
-  // but absent from compiled bun shims), then read its package.json.
-  const dirs = (process.env["PATH"] ?? "").split(":");
-  const piBins = dirs
-    .map((d) => join(d, "pi"))
-    .filter((p) => {
-      try {
-        return !!statSync(p).isFile();
-      } catch {
-        return false;
-      }
-    });
-  assert.ok(piBins.length > 0, "pi binary not found on PATH");
-  let globalPkgPath: string | undefined;
-  for (const piBin of piBins) {
-    const wrapper = readFileSync(piBin, "utf8");
-    const match = wrapper
-      .match(/[\w${}/.~-]+node_modules\/@earendil-works\/pi-coding-agent/)?.[0]
-      ?.replace("$HOME", homedir());
-    if (match) {
-      globalPkgPath = match;
-      break;
-    }
-  }
-  assert.ok(globalPkgPath, "could not resolve pi package path from any wrapper script on PATH");
-  const { version: installedVersion } = JSON.parse(readFileSync(`${globalPkgPath}/package.json`, "utf8")) as {
-    version: string;
-  };
+  // Pi is a release binary installed by `pi-install`; ask it for its version.
+  const installedVersion = execFileSync("pi", ["--version"], { encoding: "utf8" }).trim();
   assert.equal(
     devVersion,
     installedVersion,

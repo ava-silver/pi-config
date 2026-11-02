@@ -3,7 +3,7 @@
 //   2. pre-flight: sync node_modules to bun.lock, then bun run verify
 //   3. bun update --latest
 //   4. skip post-steps if lockfile unchanged (nothing to do)
-//   5. install the pinned pi packages globally
+//   5. install the pinned Pi release binary (pi-install)
 //   6. post-check: bun run verify
 //   7. smoke test: write a unique token to a temp file, ask pi to read it
 //      back via --print --no-session, assert the token appears in output
@@ -47,13 +47,7 @@ export default function updateExtension(pi: ExtensionAPI): void {
       }
 
       const extensionsDir = import.meta.dirname;
-      const bunBin = process.execPath;
-      const piEntry = process.argv[1];
-
-      if (!piEntry) {
-        ctx.ui.notify("/update: could not determine Pi entrypoint", "error");
-        return;
-      }
+      const bunBin = "bun";
 
       if (ctx.mode === "tui") {
         registerTransientSegment(SEGMENT_KEY, {
@@ -67,16 +61,15 @@ export default function updateExtension(pi: ExtensionAPI): void {
 
       // Shell script runs entirely detached. Positional args:
       //   $1 = resultPath  $2 = logPath  $3 = extensionsDir
-      //   $4 = bunBin      $5 = piEntry  $6 = smokeFile  $7 = smokeToken
+      //   $4 = bunBin      $5 = smokeFile  $6 = smokeToken
       const script = `
 status=no_changes
 result=$1
 log=$2
 extensions_dir=$3
 bun_bin=$4
-pi_entry=$5
-smoke_file=$6
-smoke_token=$7
+smoke_file=$5
+smoke_token=$6
 
 finish() {
   printf '%s' "$status" > "$result.tmp.$$"
@@ -112,12 +105,8 @@ if [ "$mtime_before" = "$mtime_after" ]; then
   exit 0
 fi
 
-# The pi command runs the global install, so match it to the new pins
-global_pkgs=$(cd "$extensions_dir" && "$bun_bin" -e '
-const deps = require("./package.json").devDependencies;
-console.log(["pi-coding-agent", "pi-server"].map((n) => "@earendil-works/" + n + "@" + deps["@earendil-works/" + n]).join(" "));
-')
-if ! "$bun_bin" install -g --ignore-scripts $global_pkgs >> "$log" 2>&1; then
+# The pi command is a release binary, so match it to the version the new pins name
+if ! pi-install >> "$log" 2>&1; then
   status=global_install_failed
   exit 0
 fi
@@ -132,7 +121,7 @@ fi
 # This validates the full round-trip: provider responds, read tool is
 # available and executes, result comes back coherently.
 printf '%s' "$smoke_token" > "$smoke_file"
-smoke_output=$("$bun_bin" "$pi_entry" --print --no-session \
+smoke_output=$(pi --print --no-session \
   "Read the file $smoke_file and reply with only its exact contents, nothing else." \
   2>>"$log") || true
 
@@ -146,7 +135,7 @@ fi
 
       const child = spawn(
         "/bin/sh",
-        ["-c", script, "pi-update", resultPath, logPath, extensionsDir, bunBin, piEntry, smokeFile, smokeToken],
+        ["-c", script, "pi-update", resultPath, logPath, extensionsDir, bunBin, smokeFile, smokeToken],
         { detached: true, stdio: "ignore" },
       );
       child.once("error", () => {
