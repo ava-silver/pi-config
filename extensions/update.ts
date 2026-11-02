@@ -3,7 +3,7 @@
 //   2. pre-flight: sync node_modules to bun.lock, then bun run verify
 //   3. bun update --latest
 //   4. skip post-steps if lockfile unchanged (nothing to do)
-//   5. install the pinned Pi release binary (pi-install)
+//   5. rebuild the Pi binary from the new pins (pi-install)
 //   6. post-check: bun run verify
 //   7. smoke test: write a unique token to a temp file, ask pi to read it
 //      back via --print --no-session, assert the token appears in output
@@ -105,7 +105,7 @@ if [ "$mtime_before" = "$mtime_after" ]; then
   exit 0
 fi
 
-# The pi command is a release binary, so match it to the version the new pins name
+# The pi command is compiled from the pinned package, so rebuild it for the new pins
 if ! pi-install >> "$log" 2>&1; then
   status=global_install_failed
   exit 0
