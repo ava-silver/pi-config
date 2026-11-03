@@ -93,9 +93,9 @@ The command writes one full evidence file per session plus `index.json`. Do not 
 
 ### Mine sessions
 
-Use one `workflow` agent per indexed session. Keep the fan-out at 30 or fewer agent calls so the workflow stays below its 32-call budget. Pass the parsed index as workflow arguments rather than spending an agent call loading it. Synthesize in the parent after the workflow returns.
+Group the indexed sessions by `cwd` and spawn one subagent per repo with `subagent_spawn`. Give each its repo's evidence files, read from `index.json`. Synthesize in the parent after all subagents return.
 
-Give each agent its session evidence file and a concise temporary summary of the current setup. Each agent identifies only demonstrated friction:
+Give each agent its repo's session evidence files and a concise temporary summary of the current setup. Each agent reads every session and identifies only demonstrated friction:
 
 - user corrections or retries
 - explicit frustration
@@ -106,27 +106,30 @@ Give each agent its session evidence file and a concise temporary summary of the
 
 Do not treat ordinary iteration, initial requirements, or words such as "actually" in technical prose as pain. Require exact, short substrings from evidence records.
 
-Use this schema:
+Each agent returns a JSON array with one entry per session, using this schema:
 
 ```json
-{
-  "pain_points": [
-    {
-      "record_id": "entry-id",
-      "quote": "exact substring from that record",
-      "category": "...",
-      "severity": 1
-    }
-  ],
-  "already_addressed_by": "existing skill/config, or none"
-}
+[
+  {
+    "session_id": "id from index.json",
+    "pain_points": [
+      {
+        "record_id": "entry-id",
+        "quote": "exact substring from that record",
+        "category": "...",
+        "severity": 1
+      }
+    ],
+    "already_addressed_by": "existing skill/config, or none"
+  }
+]
 ```
 
-`record_id` may reference a **user message**, a **tool error**, or a **subagent result** — all three are citable. Severity is 1 for minor friction, 2 for material or repeated friction, and 3 for task-derailing failure. Return at most five pain points per session.
+`record_id` may reference a **user message**, a **tool error**, or a **subagent result** — all three are citable, and each must come from the session in the same entry. Severity is 1 for minor friction, 2 for material or repeated friction, and 3 for task-derailing failure. Return at most five pain points per session, and include sessions with none.
 
 ### Validate and checkpoint
 
-Write each successful agent's structured result to its own JSON file. Validate exact evidence before using or checkpointing it:
+Split each successful agent's array into one JSON file per session, keeping only `pain_points` and `already_addressed_by`. Validate exact evidence before using or checkpointing it:
 
 ```bash
 python3 ~/.pi/agent/skills/insights/extract_sessions.py validate \
@@ -135,7 +138,7 @@ python3 ~/.pi/agent/skills/insights/extract_sessions.py validate \
   --checkpoint
 ```
 
-Invalid results must not be synthesized or checkpointed. Correct or rerun them. If the workflow partially fails, validate and checkpoint only successful results.
+Invalid session results must not be synthesized or checkpointed. Correct them or rerun that repo's agent. If some subagents fail, validate and checkpoint only successful results.
 
 ### Synthesize
 
@@ -148,4 +151,4 @@ Use only validated results:
 5. For each top issue, recommend the smallest concrete fix: an existing skill, new skill, `AGENTS.md`, dotfiles tweak, or extension.
 6. Report the selected scope and sampling bias. Frequencies describe the sample, not all sessions.
 
-Also report extraction, validation, workflow, or data-quality problems found during the run.
+Also report extraction, validation, subagent, or data-quality problems found during the run.

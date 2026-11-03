@@ -24,7 +24,6 @@
 | `skill-anywhere.ts` | Enables skill autocomplete and invocation anywhere in a prompt. |
 | `slack-mcp/` | Searches Slack, reads channels, threads, and files, and creates message drafts. |
 | `spend.ts` | Records session costs and shows spend graphs. |
-| `workflows/` | Provides model-authored, multi-agent workflow orchestration. |
 | `yeet.ts` | Stages, commits, and pushes repository changes through the git workflow. |
 
 `repository-context.ts` stores metadata in `~/.pi/agent/repository-context.json`. Edit a repository entry to correct its GitHub URL, visibility, or `ci` locations, then run `/reload`.
@@ -38,7 +37,7 @@ bun run verify
 
 Use `bun fmt` to apply formatting. Restart Pi or run `/reload` after changing extension code.
 
-Bun manages dependencies and commands. Tests use Node because the workflow sandbox relies on Node's permission model.
+Bun manages dependencies and commands.
 
 ## Layout
 
