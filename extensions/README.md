@@ -21,6 +21,7 @@
 
 | `read-aloud/` | Rewrites and reads the latest response aloud. |
 | `session-secret-redaction/` | Redacts detected secrets from Pi session files. |
+| `session-history/` | `session_search` and `session_read`: search past sessions (current directory, last 60 days by default) and read them as markdown transcripts. |
 | `shell.ts` | Runs shell commands with zsh aliases and escalating cancellation. |
 | `skill-anywhere.ts` | Enables skill autocomplete and invocation anywhere in a prompt. |
 | `slack-mcp/` | Searches Slack, reads channels, threads, and files, and creates message drafts. |

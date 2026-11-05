@@ -62,7 +62,8 @@ export const SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS = {
 };
 
 /** Describes listing all tracked running and settled subagents. */
-export const SUBAGENT_LIST_TOOL_DESCRIPTION = "List all subagents (running and finished) with status, current activity, errors, and pending questions. Does not return output; results arrive automatically or via subagent_wait.";
+export const SUBAGENT_LIST_TOOL_DESCRIPTION =
+  "List all subagents (running and finished) with status, current activity, errors, and pending questions. Does not return output; results arrive automatically or via subagent_wait.";
 
 export const SUBAGENT_MESSAGE_TOOL_DESCRIPTION =
   "Send a message to a subagent. If it has a pending question, the message answers it. Otherwise, it steers the current run or reactivates a settled child into a new run. Reactivation keeps the child's on-disk transcript while it remains tracked (up to 64 children per parent session).";
