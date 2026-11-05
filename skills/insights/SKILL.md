@@ -8,48 +8,17 @@ disable-model-invocation: true
 
 Mine Pi session logs for repeated friction, then compare it with the current setup to find improvements worth making.
 
-This skill has two modes. Choose one before doing anything else.
+To understand one specific past session instead, use `session_read` (and `session_search` to find it). Failed tool calls appear in its default transcript. This skill is for multi-session review.
 
----
+**Run this as a standalone session, not injected into another task.** Mid-session injection causes the agent to take shortcuts -- inline analysis instead of subagents, no validation, no checkpointing.
 
-## Mode A — Focused analysis (one specific session)
-
-Use this when the user names a specific session, asks what went wrong in a past session, or wants to incorporate lessons from a previous session into current work.
-
-**Read the session directly — no extraction pipeline, no checkpointing:**
-
-```bash
-# By session ID:
-python3 ~/.pi/agent/skills/insights/extract_sessions.py read \
-  --session <session-id> > /tmp/insights-session.json
-
-# Or by file path:
-python3 ~/.pi/agent/skills/insights/extract_sessions.py read \
-  --file /path/to/session.jsonl > /tmp/insights-session.json
-```
-
-Then analyze the JSON inline. The session file contains `records` — each has a `record_id`, `type`, `role`, and `text`. Look for:
-
-- Tool errors (`type: "tool_error"`)
-- Failed subagents (`type: "subagent_result"`, `status: "error"`)
-- User corrections or retries
-- Tasks that never resolved
-
-Report what happened and what would prevent it. Do **not** checkpoint — this mode is read-only.
-
----
-
-## Mode B — Retrospective (multi-session review)
-
-**Run this as a standalone session, not injected into another task.** Mid-session injection causes the agent to take shortcuts — inline analysis instead of subagents, no validation, no checkpointing.
-
-### State
+## State
 
 Reviewed session IDs live in `~/.pi/agent/skills/insights/reviewed.json`. The extraction script creates this file when missing. Never analyze a reviewed session again (unless `--include-reviewed` is passed explicitly).
 
 The script excludes the active `PI_SESSION_FILE`, follows only each session's active branch, and deduplicates identical transcripts. A validated result checkpoints every duplicate source ID.
 
-### Load current context
+## Load current context
 
 Before analysis, inspect:
 
@@ -59,7 +28,7 @@ Before analysis, inspect:
 
 This context may postdate the sessions. Treat it as current coverage, not evidence that historical friction never happened.
 
-### Choose a bounded scope
+## Choose a bounded scope
 
 List unreviewed session metadata without putting transcripts in the tool output:
 
@@ -91,7 +60,7 @@ python3 ~/.pi/agent/skills/insights/extract_sessions.py extract \
 
 The command writes one full evidence file per session plus `index.json`. Do not analyze more batches unless the user asks to continue.
 
-### Mine sessions
+## Mine sessions
 
 Group the indexed sessions by `cwd` and spawn one subagent per repo with `subagent_spawn`. Give each its repo's evidence files, read from `index.json`. Synthesize in the parent after all subagents return.
 
@@ -127,7 +96,7 @@ Each agent returns a JSON array with one entry per session, using this schema:
 
 `record_id` may reference a **user message**, a **tool error**, or a **subagent result** — all three are citable, and each must come from the session in the same entry. Severity is 1 for minor friction, 2 for material or repeated friction, and 3 for task-derailing failure. Return at most five pain points per session, and include sessions with none.
 
-### Validate and checkpoint
+## Validate and checkpoint
 
 Split each successful agent's array into one JSON file per session, keeping only `pain_points` and `already_addressed_by`. Validate exact evidence before using or checkpointing it:
 
@@ -140,7 +109,7 @@ python3 ~/.pi/agent/skills/insights/extract_sessions.py validate \
 
 Invalid session results must not be synthesized or checkpointed. Correct them or rerun that repo's agent. If some subagents fail, validate and checkpoint only successful results.
 
-### Synthesize
+## Synthesize
 
 Use only validated results:
 

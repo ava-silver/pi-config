@@ -364,16 +364,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Extract a specific session file (bypasses discovery and reviewed filter)",
     )
 
-    read_parser = commands.add_parser(
-        "read",
-        help="Print the formatted transcript of one session (by ID or file path)",
-    )
-    read_group = read_parser.add_mutually_exclusive_group(required=True)
-    read_group.add_argument("--session", dest="read_session", help="Session ID")
-    read_group.add_argument(
-        "--file", dest="read_file", type=Path, help="Session .jsonl file path"
-    )
-
     validate_parser = commands.add_parser(
         "validate", help="Validate one result and optionally checkpoint it"
     )
@@ -393,27 +383,6 @@ def main(argv: list[str] | None = None) -> int:
             if args.checkpoint:
                 checkpoint(args.state, session)
             print(json.dumps({"valid": True, "source_ids": session["source_ids"]}))
-            return 0
-
-        if args.command == "read":
-            if args.read_file:
-                session = extract_session(args.read_file)
-                if session is None:
-                    raise ValueError(f"Could not parse session from {args.read_file}")
-            else:
-                active_file = (
-                    Path(value).expanduser()
-                    if (value := os.environ.get("PI_SESSION_FILE"))
-                    else None
-                )
-                all_sessions = discover_sessions(args.session_root, active_file)
-                matches = [
-                    s for s in all_sessions if args.read_session in s["source_ids"]
-                ]
-                if not matches:
-                    raise ValueError(f"Session {args.read_session!r} not found")
-                session = matches[0]
-            print(json.dumps(session, indent=2))
             return 0
 
         if args.limit is not None and args.limit < 1:
