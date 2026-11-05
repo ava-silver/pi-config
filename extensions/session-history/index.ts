@@ -15,7 +15,15 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { listSessionFiles, matchSessions, oneLine, parseWhen, readSession, searchSessions } from "./core.ts";
+import {
+  listSessionFiles,
+  matchSessions,
+  oneLine,
+  parseWhen,
+  searchRoots,
+  readSession,
+  searchSessions,
+} from "./core.ts";
 
 const DEFAULT_WINDOW = "60d";
 const QUOTED_HISTORY_NOTE =
@@ -55,14 +63,16 @@ export default function (pi: ExtensionAPI) {
     name: "session_search",
     label: "Session Search",
     description:
-      "Search past Pi sessions on this machine. Case-insensitive literal match: every whitespace-separated term must appear in the same message. Defaults to sessions under the current directory active in the last 60 days. Returns snippets with session and entry IDs; use session_read for context.",
+      'Search past Pi sessions on this machine. Case-insensitive literal match: every whitespace-separated term must appear in the same message, so use 1-3 distinctive keywords, not a question. In the current session, only content compacted away is searched. Matches user and assistant text, tool-call arguments, summaries, and subagent results; tool outputs only when results is true. Defaults to sessions under the current directory (including a repo\'s worktrees) active in the last 60 days. Returns snippets with session and entry IDs; use session_read with from=<entry> for context. To widen: cwd "*" for all directories, an earlier since, results: true for command output.',
     promptSnippet: "Search past Pi sessions by text (current directory, last 60 days by default)",
     promptGuidelines: [
-      "Use session_search when the user refers to earlier work, a previous session, or a past decision you cannot find in the current context, then session_read to see the surrounding conversation.",
+      "Use session_search when the user refers to earlier work, a previous session, or a past decision you cannot find in the current context, or when you need details lost to compaction; then session_read with from=<entry> to see the surrounding conversation.",
+      'session_search strategy: start with the default scope (current repo and its worktrees, last 60 days) and 1-3 distinctive keywords; widen with cwd "*" or an earlier since; use results: true only to find command output.',
     ],
     parameters: Type.Object({
       query: Type.String({
-        description: "Terms to find. Use exact paths, commands, error text, or distinctive phrases.",
+        description:
+          "Keywords to find; every term must appear in the same message. Use exact paths, commands, error text, or distinctive phrases.",
       }),
       cwd: Type.Optional(
         Type.String({
@@ -80,7 +90,10 @@ export default function (pi: ExtensionAPI) {
           description: "Latest session start: YYYY-MM-DD (inclusive) or ISO timestamp. Default: now.",
         }),
       ),
-      limit: Type.Optional(Type.Number({ description: "Maximum hits (1-100). Default 15." })),
+      results: Type.Optional(
+        Type.Boolean({ description: "Also match tool outputs (file contents, command output). Noisy. Default false." }),
+      ),
+      limit: Type.Optional(Type.Number({ description: "Maximum hits (1-50). Default 15." })),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       const now = Date.now();
@@ -90,17 +103,20 @@ export default function (pi: ExtensionAPI) {
       const terms = params.query.toLowerCase().split(/\s+/).filter(Boolean);
       if (terms.length === 0) throw new Error("query must not be empty");
 
-      const limit = clampInt(params.limit, 15, 100);
-      const currentSession = ctx.sessionManager.getSessionFile();
-      const files = (await listSessionFiles(sessionsRoot(), { cwd, since, until })).filter(
-        (file) => file.path !== currentSession,
-      );
-      const { hits, skipped, stoppedAtLimit } = await searchSessions(files, terms, limit, signal);
+      const limit = clampInt(params.limit, 15, 50);
+      const files = await listSessionFiles(sessionsRoot(), { cwd, since, until });
+      const { hits, skipped, stoppedAtLimit } = await searchSessions(files, terms, {
+        limit,
+        signal,
+        mode: params.results ? "full" : "calls",
+        currentPath: ctx.sessionManager.getSessionFile(),
+      });
 
-      const scope = `${files.length} sessions under ${sessionsRoot()} since ${new Date(since).toISOString().slice(0, 10)} in ${oneLine(cwd ?? "all directories")}`;
+      const scope = `${files.length} sessions since ${new Date(since).toISOString().slice(0, 10)} in ${cwd === undefined ? "all directories" : `${oneLine(searchRoots(cwd)[0])} and its worktrees`}`;
+      const labelCwd = params.cwd === "*" || new Set(hits.map((hit) => hit.cwd)).size > 1;
       const lines = hits.map(
         (hit) =>
-          `- session \`${hit.sessionId}\` entry \`${hit.entryId}\` · ${hit.time}${hit.name ? ` · ${oneLine(hit.name)}` : ""}${params.cwd === "*" && hit.cwd ? ` · ${oneLine(hit.cwd)}` : ""}\n  ${hit.snippet}`,
+          `- session \`${hit.sessionId}\` entry \`${hit.entryId}\` · ${hit.time}${hit.name ? ` · ${oneLine(hit.name)}` : ""}${labelCwd && hit.cwd ? ` · ${oneLine(hit.cwd)}` : ""}\n  ${hit.snippet}${hit.moreInSession > 0 ? `\n  (+${hit.moreInSession} more matches in this session)` : ""}`,
       );
       const shown = lines.filter(
         (_, index) => Buffer.byteLength(lines.slice(0, index + 1).join("\n"), "utf8") <= SEARCH_BODY_BYTES,
@@ -113,6 +129,10 @@ export default function (pi: ExtensionAPI) {
           ? "Stopped at the hit limit; older sessions were not searched. Narrow the query or date range."
           : "",
         skipped > 0 ? `${skipped} oversized sessions skipped.` : "",
+        hits.length === 0 && files.length === 0 ? "No sessions in scope; check cwd and since." : "",
+        hits.length === 0 && files.length > 0
+          ? 'Try fewer or different terms (all must match one message), a wider since, cwd "*", or results: true.'
+          : "",
       ].filter(Boolean);
       return quotedText(
         shown.length ? shown.join("\n") : "No matches.",
@@ -130,7 +150,8 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read a past Pi session as a markdown transcript",
     parameters: Type.Object({
       session: Type.String({
-        description: "Session ID (or unique prefix) from session_search, or an absolute .jsonl path.",
+        description:
+          'Full session ID from a session_search hit, an absolute .jsonl path, or "current" for the running session (e.g. to recover content lost to compaction).',
       }),
       from: Type.Optional(Type.String({ description: "Entry ID to start the page at." })),
       entry: Type.Optional(
@@ -150,12 +171,17 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, params, signal) {
+    async execute(_id, params, signal, _onUpdate, ctx) {
       const files = await listSessionFiles(sessionsRoot(), {});
-      const matches = matchSessions(files, params.session);
+      const reference = params.session === "current" ? (ctx.sessionManager.getSessionFile() ?? "") : params.session;
+      if (params.session === "current" && reference === "")
+        throw new Error("The current session is not saved to disk.");
+      const matches = matchSessions(files, reference);
       if (matches.length === 0) throw new Error(`No session matches "${params.session}".`);
       if (matches.length > 1)
-        throw new Error(`"${params.session}" matches ${matches.length} sessions; use a longer ID.`);
+        throw new Error(
+          `"${params.session}" matches ${matches.length} sessions; use a longer ID or a path:\n${matches.map((file) => file.path).join("\n")}`,
+        );
       const transcript = await readSession(matches[0]!, {
         signal,
         from: params.from,

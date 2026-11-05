@@ -4,15 +4,19 @@ import { join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 
 const DAY_MS = 86_400_000;
-const MAX_FILE_BYTES = 200 * 1024 * 1024;
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_HITS_PER_SESSION = 3;
+const SNIPPET_BEFORE = 100;
+const SNIPPET_AFTER = 300;
 const TRANSCRIPT_ENTRY: EntryLimits = { bytes: 12_000, lines: 200, hint: "read entry {id} for the rest" };
 const SINGLE_ENTRY: EntryLimits = { bytes: 46_000, lines: 1500, hint: "entry cut at the tool size limit" };
+const TOOL_RESULT_ENTRY: EntryLimits = { bytes: 16_000, lines: 400, hint: "read this entry alone for the rest" };
 const UNLIMITED: EntryLimits = { bytes: Infinity, lines: Infinity, hint: "" };
 const MAX_HEADER_BYTES = 1024 * 1024;
 const FILENAME = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z_(.+)\.jsonl$/;
 
-export type ToolsMode = "none" | "stubs" | "full";
+/** `calls` shows full tool-call arguments but no results; `full` adds results. */
+export type ToolsMode = "none" | "stubs" | "calls" | "full";
 
 export interface SessionFile {
   path: string;
@@ -38,6 +42,8 @@ export interface ParsedSession {
 }
 
 export interface SearchHit {
+  /** Further matching entries in the same session that are not listed (set on its last hit). */
+  moreInSession: number;
   sessionId: string;
   cwd?: string | undefined;
   name?: string | undefined;
@@ -60,6 +66,16 @@ function encodeCwd(cwd: string): string {
   return `--${cwd.replace(/^[\\/]/, "").replace(/[\\/:]/g, "-")}`;
 }
 
+/**
+ * Directories whose sessions belong to `cwd`: the directory itself, plus the repo's sibling
+ * `<repo>.worktrees/` directory (see git-workflow), even when `cwd` is inside one of its worktrees.
+ */
+export function searchRoots(cwd: string): [string, string] {
+  const resolved = resolve(cwd);
+  const base = /^(.*?)\.worktrees(?:\/|$)/.exec(resolved)?.[1] ?? resolved;
+  return [base, `${base}.worktrees`];
+}
+
 async function readHeaderCwd(path: string): Promise<string | undefined> {
   const lines = createInterface({ input: createReadStream(path, { encoding: "utf8", end: MAX_HEADER_BYTES }) });
   try {
@@ -80,7 +96,8 @@ export async function listSessionFiles(
   root: string,
   options: { cwd?: string | undefined; since?: number | undefined; until?: number | undefined },
 ): Promise<SessionFile[]> {
-  const prefix = options.cwd === undefined ? undefined : encodeCwd(resolve(options.cwd));
+  const roots = options.cwd === undefined ? undefined : searchRoots(options.cwd);
+  const prefix = roots === undefined ? undefined : encodeCwd(roots[0]!);
   const dirs = (await readdir(root).catch(() => [])).filter((dir) => prefix === undefined || dir.startsWith(prefix));
   const perDir = await Promise.all(
     dirs.map(async (dir) => {
@@ -98,12 +115,11 @@ export async function listSessionFiles(
   );
   const sorted = perDir.flat().toSorted((a, b) => b.startedAt - a.startedAt);
   // Directory names are a lossy encoding of the cwd, so confirm against the session header.
-  const wanted = options.cwd === undefined ? undefined : resolve(options.cwd);
   const inCwd = await Promise.all(
     sorted.map(async (file) => {
-      if (wanted === undefined) return true;
+      if (roots === undefined) return true;
       const cwd = await readHeaderCwd(file.path);
-      return cwd === wanted || cwd?.startsWith(wanted.endsWith(sep) ? wanted : wanted + sep) === true;
+      return cwd !== undefined && roots.some((root) => cwd === root || cwd.startsWith(root + sep));
     }),
   );
   const candidates = sorted.filter((_, index) => inCwd[index]);
@@ -188,9 +204,28 @@ function truncate(text: string, limits: EntryLimits, entryId: string | undefined
   return `${kept}\n… [truncated; ${limits.hint.replace("{id}", entryId ?? "?")}]`;
 }
 
+/** Renders a value as unescaped text: strings as-is, arrays and objects recursively as `key=value`. */
+function plain(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(plain).join(" | ");
+  if (value !== null && typeof value === "object")
+    return Object.entries(value)
+      .map(([key, inner]) => `${key}=${plain(inner)}`)
+      .join(" ");
+  return JSON.stringify(value) ?? "";
+}
+
+/** Readable call arguments: the command for bash, `key=value` pairs otherwise. */
+function callArgs(call: { name: string; arguments?: unknown }): string {
+  const args = call.arguments;
+  return call.name === "bash" && typeof (args as { command?: unknown })?.command === "string"
+    ? (args as { command: string }).command
+    : plain(args ?? {});
+}
+
 function toolStub(call: { name: string; arguments?: unknown }): string {
-  const args = JSON.stringify(call.arguments ?? {});
-  return `[tool ${call.name}: ${args.length > 120 ? `${args.slice(0, 120)}…` : args}]`;
+  const args = oneLine(callArgs(call), 200);
+  return `[tool ${call.name}: ${args}]`;
 }
 
 /** Renders one entry as `{ label, text }`, or undefined when the entry has nothing to show. */
@@ -203,8 +238,15 @@ export function renderEntry(
     text.trim() ? { label, text: truncate(text.trim(), limits, entry.id) } : undefined;
   if (entry.type === "compaction" || entry.type === "branch_summary")
     return finish("summary", typeof entry.summary === "string" ? entry.summary : "");
+  // Extension-injected notes, such as subagent and background shell results, read like a user turn.
+  if (entry.type === "custom_message" && entry.display !== false)
+    return finish(`note:${oneLine(String(entry.customType ?? "?"), 40)}`, textOf(entry.content));
   if (entry.type !== "message") return undefined;
   const message = entry.message;
+  if (message?.role === "bashExecution") {
+    const output = tools === "full" ? `\n${typeof message.output === "string" ? message.output : ""}` : "";
+    return finish("user bash", `$ ${message.command}${output}`);
+  }
   if (message?.role === "user") return finish("user", textOf(message.content));
   if (message?.role === "assistant") {
     const calls = Array.isArray(message.content)
@@ -214,12 +256,12 @@ export function renderEntry(
       tools === "none"
         ? []
         : calls.map((call: { name: string; arguments?: unknown }) =>
-            tools === "full" ? `[tool ${call.name}] ${JSON.stringify(call.arguments)}` : toolStub(call),
+            tools === "full" || tools === "calls" ? `[tool ${call.name}] ${callArgs(call)}` : toolStub(call),
           );
     return finish("assistant", [textOf(message.content), ...callText].filter(Boolean).join("\n"));
   }
   if (message?.role === "toolResult") {
-    if (tools === "none" || (tools === "stubs" && !message.isError)) return undefined;
+    if (tools === "none" || tools === "calls" || (tools === "stubs" && !message.isError)) return undefined;
     const prefix = `[${message.isError ? "tool error" : "tool result"} ${message.toolName}]`;
     return finish("tool", `${prefix}\n${textOf(message.content)}`);
   }
@@ -238,20 +280,44 @@ function formatEntry(entry: SessionEntry, rendered: { label: string; text: strin
   return `**${rendered.label}** · ${stamp(entry)} · \`${oneLine(String(entry.id ?? "?"))}\`\n\n${rendered.text}`;
 }
 
+const matchesAll = (text: string | undefined, terms: string[]) =>
+  text !== undefined && terms.every((term) => text.toLowerCase().includes(term));
+
+/** Windows the text around the terms: one window when they sit close together, else one per term (up to 3). */
 function snippetAround(text: string, terms: string[]): string {
   const flat = text.replace(/\s+/g, " ");
-  const at = Math.max(0, flat.toLowerCase().indexOf(terms[0]!));
-  const start = Math.max(0, at - 80);
-  return `${start > 0 ? "…" : ""}${flat.slice(start, at + 160)}${flat.length > at + 160 ? "…" : ""}`;
+  const lower = flat.toLowerCase();
+  const found = terms.map((term) => lower.indexOf(term)).filter((at) => at >= 0);
+  const first = Math.min(...found);
+  const last = Math.max(...found);
+  const window = (at: number, before: number, after: number) => {
+    const start = Math.max(0, at - before);
+    const end = at + after;
+    return `${start > 0 ? "…" : ""}${flat.slice(start, end)}${flat.length > end ? "…" : ""}`;
+  };
+  if (found.length === 0) return window(0, 0, SNIPPET_AFTER);
+  if (last - first <= SNIPPET_AFTER - 100) return window(first, SNIPPET_BEFORE, last - first + 100 + SNIPPET_BEFORE);
+  return [...new Set(found)]
+    .toSorted((a, b) => a - b)
+    .slice(0, 3)
+    .map((at) => window(at, 40, 140))
+    .join(" ");
 }
 
 /** Finds entries containing every term (case-insensitive), at most a few per session, newest session first. */
 export async function searchSessions(
   files: SessionFile[],
   terms: string[],
-  limit: number,
-  signal?: AbortSignal,
+  options: {
+    limit: number;
+    signal?: AbortSignal | undefined;
+    /** `calls` (default) skips tool outputs; `full` includes them. */
+    mode?: ToolsMode | undefined;
+    /** The running session: only the part compacted away is searched, since the rest is already in context. */
+    currentPath?: string | undefined;
+  },
 ): Promise<{ hits: SearchHit[]; skipped: number; stoppedAtLimit: boolean }> {
+  const { limit, signal, mode = "calls", currentPath } = options;
   const hits: SearchHit[] = [];
   let skipped = 0;
   for (const file of files) {
@@ -264,15 +330,33 @@ export async function searchSessions(
     const raw = await readFile(file.path, { encoding: "utf8", signal }).catch(() => "");
     const lower = raw.toLowerCase();
     // Cheap whole-file check first so only plausible sessions get parsed.
-    if (!terms.every((term) => lower.includes(term))) continue;
+    // Terms are compared against the raw JSON, so escape them the way JSON.stringify did.
+    if (!terms.every((term) => lower.includes(JSON.stringify(term).slice(1, -1)))) continue;
     const session = parseSession(raw);
-    const matches = session.branch.flatMap((entry) => {
-      const rendered = renderEntry(entry, "full", UNLIMITED);
-      const haystack = rendered?.text.toLowerCase();
-      return rendered && haystack && terms.every((term) => haystack.includes(term)) ? [{ entry, rendered }] : [];
-    });
-    matches.slice(0, Math.min(MAX_HITS_PER_SESSION, limit - hits.length)).forEach(({ entry, rendered }) =>
+    const searchable =
+      file.path === currentPath
+        ? session.branch.slice(
+            0,
+            Math.max(
+              0,
+              session.branch.findLastIndex((entry) => entry.type === "compaction"),
+            ),
+          )
+        : session.branch;
+    const matches = searchable
+      .flatMap((entry) => {
+        const rendered = renderEntry(entry, mode, UNLIMITED);
+        const haystack = rendered?.text.toLowerCase();
+        return rendered && haystack && terms.every((term) => haystack.includes(term))
+          ? [{ entry, rendered, prose: matchesAll(renderEntry(entry, "none", UNLIMITED)?.text, terms) }]
+          : [];
+      })
+      // Prose beats tool-call arguments; order is otherwise chronological.
+      .toSorted((a, b) => Number(b.prose) - Number(a.prose));
+    const shown = matches.slice(0, Math.min(MAX_HITS_PER_SESSION, limit - hits.length));
+    shown.forEach(({ entry, rendered }, index) =>
       hits.push({
+        moreInSession: index === shown.length - 1 ? matches.length - shown.length : 0,
         sessionId: file.id,
         cwd: session.cwd,
         name: session.name,
@@ -304,18 +388,34 @@ export async function readSession(
   if (options.entry !== undefined) {
     const entry = session.branch.find((candidate) => candidate.id === options.entry);
     const rendered = entry && renderEntry(entry, "full", SINGLE_ENTRY);
-    return rendered
-      ? `${title}\n\n${formatEntry(entry, rendered)}`
-      : `${title}\n\nEntry ${options.entry} not found on the active branch.`;
+    if (!entry || !rendered) return `${title}\n\nEntry ${options.entry} not found on the active branch.`;
+    // An assistant turn's tool results are what the reader usually wants next.
+    const callIds = new Set<unknown>(
+      (Array.isArray(entry.message?.content) ? entry.message.content : [])
+        .filter((block: { type?: string }) => block?.type === "toolCall")
+        .map((block: { id?: unknown }) => block.id),
+    );
+    const results = session.branch.flatMap((candidate) => {
+      const result = callIds.has(candidate.message?.toolCallId) && renderEntry(candidate, "full", TOOL_RESULT_ENTRY);
+      return result ? [formatEntry(candidate, result)] : [];
+    });
+    return [title, formatEntry(entry, rendered), ...results].join("\n\n");
   }
 
-  const blocks = session.branch.flatMap((entry) => {
+  const blocks = session.branch.flatMap((entry, position) => {
     const rendered = renderEntry(entry, options.tools, TRANSCRIPT_ENTRY);
-    return rendered ? [{ id: entry.id, text: formatEntry(entry, rendered) }] : [];
+    return rendered ? [{ id: entry.id, position, text: formatEntry(entry, rendered) }] : [];
   });
-  const startIndex = options.from === undefined ? 0 : blocks.findIndex((block) => block.id === options.from);
+  // `from` may name an entry hidden at this detail level (e.g. a successful tool result): start at the next visible one.
+  const fromPosition = options.from === undefined ? 0 : session.branch.findIndex((entry) => entry.id === options.from);
+  const startIndex =
+    options.from === undefined
+      ? 0
+      : fromPosition < 0
+        ? -1
+        : blocks.findIndex((block) => block.position >= fromPosition);
   if (startIndex < 0)
-    return `${title}\n\nEntry ${options.from} not found (or has no visible content with tools="${options.tools}").`;
+    return `${title}\n\nEntry ${options.from} not found on the active branch, or nothing visible follows it.`;
 
   const page: string[] = [];
   let bytes = 0;

@@ -4,7 +4,15 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { listSessionFiles, matchSessions, oneLine, parseWhen, readSession, searchSessions } from "./core.ts";
+import {
+  listSessionFiles,
+  matchSessions,
+  oneLine,
+  parseWhen,
+  searchRoots,
+  readSession,
+  searchSessions,
+} from "./core.ts";
 
 const line = (value: unknown) => JSON.stringify(value);
 const session = [
@@ -104,16 +112,18 @@ test("listing filters by directory subtree and by recent activity", async () => 
 test("search matches all terms in one message on the active branch only", async () => {
   const root = await fixture();
   const files = await listSessionFiles(root, {});
-  assert.equal((await searchSessions(files, ["region", "eu-west-9"], 10)).hits.length, 3);
-  assert.equal((await searchSessions(files, ["deploy", "region"], 10)).hits.length, 0);
-  assert.equal((await searchSessions(files, ["abandoned"], 10)).hits.length, 0);
+  assert.equal((await searchSessions(files, ["region", "eu-west-9"], { limit: 10, mode: "full" })).hits.length, 3);
+  assert.equal((await searchSessions(files, ["eu-west-9"], { limit: 10 })).hits.length, 0);
+  assert.equal((await searchSessions(files, ["cat", "deploy.yml"], { limit: 10 })).hits.length, 3);
+  assert.equal((await searchSessions(files, ["deploy", "region"], { limit: 10 })).hits.length, 0);
+  assert.equal((await searchSessions(files, ["abandoned"], { limit: 10 })).hits.length, 0);
 });
 
 test("transcripts omit thinking and successful tool results unless requested", async () => {
   const root = await fixture();
   const [file] = await listSessionFiles(root, { cwd: "/work/app" });
   const stubs = await readSession(file!, { tools: "stubs", maxBytes: 10_000, maxLines: 1000 });
-  assert.match(stubs, /\[tool bash: \{"command":"cat deploy.yml"\}\]/);
+  assert.match(stubs, /\[tool bash: cat deploy\.yml\]/);
   assert.doesNotMatch(stubs, /secret musing|eu-west-9|abandoned/);
   const none = await readSession(file!, { tools: "none", maxBytes: 10_000, maxLines: 1000 });
   assert.doesNotMatch(none, /\[tool bash/);
@@ -143,13 +153,13 @@ test("malformed session files do not hang or abort a search", async () => {
   ].join("\n");
   await writeFile(join(root, "--bad--", "2026-10-01T10-00-00-000Z_bad.jsonl"), body);
   const files = await listSessionFiles(root, {});
-  assert.equal((await searchSessions(files, ["needle"], 10)).hits.length, 1);
+  assert.equal((await searchSessions(files, ["needle"], { limit: 10 })).hits.length, 1);
 });
 
 test("hits never exceed the limit", async () => {
   const root = await fixture();
   const files = await listSessionFiles(root, {});
-  assert.equal((await searchSessions(files, ["region"], 1)).hits.length, 1);
+  assert.equal((await searchSessions(files, ["region"], { limit: 1 })).hits.length, 1);
 });
 
 test("pages respect the line budget", async () => {
@@ -230,4 +240,134 @@ test("oversized metadata is shortened to one line", () => {
   const long = oneLine(`x${"\n".repeat(5)}${"y".repeat(5000)}`);
   assert.ok(long.length <= 201);
   assert.doesNotMatch(long, /\n/);
+});
+
+test("a repo search includes its worktrees, from the repo or from inside a worktree", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-history-"));
+  const add = async (dir: string, id: string, cwd: string) => {
+    await mkdir(join(root, dir), { recursive: true });
+    await writeFile(join(root, dir, `2026-10-01T10-00-00-000Z_${id}.jsonl`), line({ type: "session", id, cwd }));
+  };
+  await add("--dd-repo--", "main", "/dd/repo");
+  await add("--dd-repo.worktrees-feat--", "wt", "/dd/repo.worktrees/feat");
+  await add("--dd-repo2--", "other", "/dd/repo2");
+  const ids = async (cwd: string) => (await listSessionFiles(root, { cwd })).map((f) => f.id).toSorted();
+  assert.deepEqual(await ids("/dd/repo"), ["main", "wt"]);
+  assert.deepEqual(await ids("/dd/repo.worktrees/feat"), ["main", "wt"]);
+  assert.deepEqual(searchRoots("/dd/repo.worktrees/feat/pkg"), ["/dd/repo", "/dd/repo.worktrees"]);
+});
+
+test("agents can resume from a hit on a hidden tool result and see extension notes", async () => {
+  const root = await fixture();
+  const [file] = await listSessionFiles(root, { cwd: "/work/app" });
+  const page = await readSession(file!, { from: "a3", tools: "stubs", maxBytes: 10_000, maxLines: 1000 });
+  assert.match(page, /Region is wrong/);
+  assert.doesNotMatch(page, /Checking the config/);
+  assert.match(
+    await readSession(file!, { from: "nope", tools: "stubs", maxBytes: 10_000, maxLines: 1000 }),
+    /not found/,
+  );
+
+  const dir = await mkdtemp(join(tmpdir(), "session-history-"));
+  await mkdir(join(dir, "--n--"), { recursive: true });
+  await writeFile(
+    join(dir, "--n--", "2026-10-01T10-00-00-000Z_n.jsonl"),
+    [
+      line({ type: "session", id: "n", cwd: "/n" }),
+      line({
+        type: "custom_message",
+        id: "x1",
+        parentId: null,
+        customType: "subagent-result",
+        display: true,
+        content: "Subagent finished: zebra",
+      }),
+    ].join("\n"),
+  );
+  const [note] = await listSessionFiles(dir, {});
+  assert.equal((await searchSessions([note!], ["zebra"], { limit: 5 })).hits.length, 1);
+});
+
+test("search reports matches beyond the per-session cap", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "session-history-"));
+  await mkdir(join(dir, "--m--"), { recursive: true });
+  const entries = Array.from({ length: 5 }, (_, i) =>
+    line({
+      type: "message",
+      id: `u${i}`,
+      parentId: i === 0 ? null : `u${i - 1}`,
+      message: { role: "user", content: "needle" },
+    }),
+  );
+  await writeFile(
+    join(dir, "--m--", "2026-10-01T10-00-00-000Z_m.jsonl"),
+    [line({ type: "session", id: "m", cwd: "/m" }), ...entries].join("\n"),
+  );
+  const { hits } = await searchSessions(await listSessionFiles(dir, {}), ["needle"], { limit: 10 });
+  assert.deepEqual(
+    hits.map((hit) => hit.moreInSession),
+    [0, 0, 2],
+  );
+});
+
+test("queries match readable command text, including quotes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "session-history-"));
+  await mkdir(join(dir, "--q--"), { recursive: true });
+  const call = { type: "toolCall", id: "t1", name: "bash", arguments: { command: 'grep "typebox" a.ts\nls' } };
+  const edit = {
+    type: "toolCall",
+    id: "t2",
+    name: "edit",
+    arguments: { path: "a.ts", edits: [{ oldText: 'x = "needle"' }] },
+  };
+  await writeFile(
+    join(dir, "--q--", "2026-10-01T10-00-00-000Z_q.jsonl"),
+    [
+      line({ type: "session", id: "q", cwd: "/q" }),
+      line({ type: "message", id: "q1", parentId: null, message: { role: "assistant", content: [call, edit] } }),
+      line({
+        type: "message",
+        id: "q2",
+        parentId: "q1",
+        message: {
+          role: "toolResult",
+          toolCallId: "t1",
+          toolName: "bash",
+          content: [{ type: "text", text: "a.ts:1" }],
+        },
+      }),
+    ].join("\n"),
+  );
+  const files = await listSessionFiles(dir, {});
+  const { hits } = await searchSessions(files, ['grep "typebox"'.toLowerCase().split(" ")[0]!, '"typebox"'], {
+    limit: 5,
+  });
+  assert.equal(hits.length, 1);
+  assert.match(hits[0]!.snippet, /grep "typebox" a\.ts/);
+  assert.equal((await searchSessions(files, ['x = "needle"'.split(" ")[0]!, '"needle"'], { limit: 5 })).hits.length, 1);
+  // Reading the call also returns its result.
+  assert.match(await readSession(files[0]!, { entry: "q1", tools: "stubs", maxBytes: 1000, maxLines: 100 }), /a\.ts:1/);
+});
+
+test("the current session is searched only before its latest compaction", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "session-history-"));
+  await mkdir(join(dir, "--c--"), { recursive: true });
+  const user = (id: string, parentId: string | null, content: string) =>
+    line({ type: "message", id, parentId, message: { role: "user", content } });
+  const path = join(dir, "--c--", "2026-10-01T10-00-00-000Z_c.jsonl");
+  await writeFile(
+    path,
+    [
+      line({ type: "session", id: "c", cwd: "/c" }),
+      user("c1", null, "old needle"),
+      line({ type: "compaction", id: "c2", parentId: "c1", summary: "summary" }),
+      user("c3", "c2", "new needle"),
+    ].join("\n"),
+  );
+  const files = await listSessionFiles(dir, {});
+  const { hits } = await searchSessions(files, ["needle"], { limit: 5, currentPath: path });
+  assert.deepEqual(
+    hits.map((hit) => hit.entryId),
+    ["c1"],
+  );
 });
