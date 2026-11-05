@@ -11,7 +11,7 @@ Pair the parent with one persistent partner. The parent edits the target; the pa
 ## Workflow
 
 1. Define the target, workspace, exercise method, constraints, success criteria, and coverage dimensions. When an analogous implementation or prior summary exists, compare ownership detection, managed names and mount paths, cleanup gates, provider defaults and idempotency, error rendering, cold-start guidance, and artifact compatibility.
-2. Read `../subagents/SKILL.md`, then spawn one subagent where it can exercise the target. Keep it for the full loop; `subagent_message` can reactivate it after settlement with its transcript intact.
+2. Spawn one subagent where it can exercise the target. Keep it for the full loop; `subagent_message` can reactivate it after settlement with its transcript intact.
 3. Before mutating external resources, agree on a unique namespace, ownership marker, baseline capture, and cleanup plan. Use unique names and labels, and never mutate the parent's fixture without coordination.
 4. Ask the partner to maintain a coverage matrix and a stable finding ledger (`F1`, `F2`, ...). Classify each finding as an actionable code defect, product decision, external release blocker, or coverage gap or untested risk.
 5. For lifecycle or preview fixes, retest each applicable path: fresh apply, exact no-op retry, changed configuration, disable or manual transition, uninstrument and repeated uninstrument, single-target failure, and multi-target failure when batching exists. Use real-environment changed-candidate tests when possible; a no-op preview alone is insufficient.
