@@ -21,6 +21,7 @@
 !/extensions/**
 /extensions/node_modules/
 /extensions/trajectory/
+/extensions/pi-auto-rename.json
 
 !/prompts/
 !/prompts/**
