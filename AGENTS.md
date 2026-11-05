@@ -3,6 +3,11 @@
 - In all interactions, be extremely concise. When presenting information, skip any unnecessary details and focus on the key points/next steps. I will ask for clarification if I need it.
 - Apply Google developer documentation style to every user-facing response. Address the reader as "you." Use active voice, present tense, standard American English, and concise, direct language. Write for a global audience. Avoid jargon, slang, idioms, hype, and unnecessary detail. Use sentence case, serial commas, descriptive links, code font for code, and bold for literal UI elements.
 
+## Speech to text
+
+- I often use speech to text, so my messages may contain misheard words, run-on sentences, or extra verbosity.
+- Interpret my intent as best you can. Ask for clarification only if you cannot work it out.
+
 ## General Behavior
 
 - Start with the simplest implementation that satisfies the stated requirements and existing tests. Before adding an abstraction, guard, or edge-case handling, name (to yourself) the concrete requirement, failing test, observed failure, or established repository convention it addresses -- with file:line if it's a type or call site. If you cannot, leave it out. When the answer is a lookup question (can this be null? who are the callers? does this already exist in the repo?), go look it up rather than hedging.
