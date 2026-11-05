@@ -20,7 +20,7 @@
 !/extensions/**
 /extensions/node_modules/
 /extensions/trajectory/
-/extensions/pi-auto-rename.json
+/extensions/pi-session-auto-rename.json
 
 !/prompts/
 !/prompts/**
