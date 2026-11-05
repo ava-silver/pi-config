@@ -18,7 +18,7 @@ export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
 export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
   "Spawning a subagent costs a full context spin-up, so do small or tightly coupled tasks yourself. Delegate only when the work is independent of your context and you need parallel work, a smaller context for yourself, or an independent second opinion. Validate returned work before relying on it.",
   "Use subagent_spawn to delegate tasks that can run in the background. Give the child enough context to start, and invite it to ask_parent for clarification, decisions, or missing context that could improve the result.",
-  "After subagent_spawn, keep working; results arrive automatically. Use subagent_message, subagent_check, subagent_wait, or subagent_cancel whenever needed; call subagent_wait when you cannot proceed without the result.",
+  "After subagent_spawn, keep working; results arrive automatically. Use subagent_message, subagent_list, subagent_wait, or subagent_cancel whenever needed; call subagent_wait when you cannot proceed without the result.",
   "Use subagent_message to steer a subagent or answer its pending question. Use ask_user first only when the answer requires the user's input.",
 ];
 
@@ -39,7 +39,7 @@ export function buildSubagentSpawnResult(options: { id: string; title: string; m
   return (
     `Spawned subagent ${options.id} "${options.title}" (${options.modelLabel}, ${options.cwd}).\n` +
     `It runs in the background. Its result will be delivered to you when it finishes, ` +
-    `or use subagent_wait(ids: ["${options.id}"]) to block for it, subagent_cancel to stop it, subagent_check to peek, subagent_list to see all.`
+    `or use subagent_wait(ids: ["${options.id}"]) to block for it, subagent_cancel to stop it, subagent_list to see status.`
   );
 }
 
@@ -61,17 +61,8 @@ export const SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS = {
   ids: 'Subagent ids to cancel, e.g. ["sa-1", "sa-2"]',
 };
 
-/** Describes nonblocking inspection of a subagent without consuming its result. */
-export const SUBAGENT_CHECK_TOOL_DESCRIPTION =
-  "Peek at a subagent's status, current activity, and latest progress without blocking. Does not consume its result.";
-
-/** Model-facing schema description for the subagent id to inspect. */
-export const SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS = {
-  id: "Subagent id",
-};
-
 /** Describes listing all tracked running and settled subagents. */
-export const SUBAGENT_LIST_TOOL_DESCRIPTION = "List all subagents (running and finished) with their status.";
+export const SUBAGENT_LIST_TOOL_DESCRIPTION = "List all subagents (running and finished) with status, current activity, errors, and pending questions. Does not return output; results arrive automatically or via subagent_wait.";
 
 export const SUBAGENT_MESSAGE_TOOL_DESCRIPTION =
   "Send a message to a subagent. If it has a pending question, the message answers it. Otherwise, it steers the current run or reactivates a settled child into a new run. Reactivation keeps the child's on-disk transcript while it remains tracked (up to 64 children per parent session).";

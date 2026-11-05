@@ -28,50 +28,47 @@ function shellTools() {
   return {
     run: tools.get("background_shell_run")!,
     cancel: tools.get("background_shell_cancel")!,
-    check: tools.get("background_shell_check")!,
   };
 }
 
 function artifactPath(result: ToolResult | undefined): string | undefined {
-  return /Full output: (.+)]/.exec(result?.content[0]?.text ?? "")?.[1];
+  return /Output log: (.+)/.exec(result?.content[0]?.text ?? "")?.[1];
 }
 
 test("artifact quota remains 10 MB", () => {
   assert.equal(MAX_ARTIFACT_BYTES, 10 * 1024 * 1024);
 });
 
-test("stream artifacts finalize before a settled shell is reported", async () => {
-  const { run, check } = shellTools();
+async function waitForSize(file: string | undefined, size: number) {
+  for (let attempt = 0; attempt < 80; attempt++) {
+    if (file && fs.existsSync(file) && fs.statSync(file).size >= size) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`${file} never reached ${size} bytes`);
+}
+
+test("run result includes a private output log that receives the full output", async () => {
+  const { run } = shellTools();
   const cwd = process.cwd();
   const started = await run.execute(
     "test",
     { command: "head -c 65536 /dev/zero | tr '\\0' x", title: "output", working_dir: cwd },
     undefined,
     undefined,
-    {
-      cwd,
-    },
+    { cwd },
   );
-  assert.ok(started.details.id);
-
-  let result: ToolResult | undefined;
-  for (let attempt = 0; attempt < 40; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    result = await check.execute("test", { id: started.details.id });
-    if (result.details.status !== "running") break;
-  }
-  assert.equal(result?.details.status, "done");
-  const outputPath = artifactPath(result);
+  const outputPath = artifactPath(started);
   assert.ok(outputPath);
-  const artifact = await fs.promises.readFile(outputPath);
-  assert.equal(artifact.length, 65536);
+
+  await waitForSize(outputPath, 65536);
+  assert.equal((await fs.promises.readFile(outputPath)).length, 65536);
   assert.equal((await fs.promises.stat(outputPath)).mode & 0o777, 0o600);
   assert.equal((await fs.promises.stat(path.dirname(outputPath))).mode & 0o777, 0o700);
   await removeTerminalArtifactDirectory(path.dirname(outputPath));
 });
 
 test("cancelling waits for buffered artifact output", async () => {
-  const { run, cancel, check } = shellTools();
+  const { run, cancel } = shellTools();
   const cwd = process.cwd();
   const started = await run.execute(
     "test",
@@ -80,20 +77,11 @@ test("cancelling waits for buffered artifact output", async () => {
     undefined,
     { cwd },
   );
-  assert.ok(started.details.id);
-
-  let running: ToolResult | undefined;
-  for (let attempt = 0; attempt < 40; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    running = await check.execute("test", { id: started.details.id });
-    if (artifactPath(running)) break;
-  }
-  const outputPath = artifactPath(running);
+  const outputPath = artifactPath(started);
   assert.ok(outputPath);
 
+  await waitForSize(outputPath, 65536);
   await cancel.execute("test", { ids: [started.details.id] });
-  const settled = await check.execute("test", { id: started.details.id });
-  assert.equal(settled.details.status, "error");
   assert.equal(getTransientSegments().get("terminals"), undefined);
   assert.ok((await fs.promises.readFile(outputPath)).length >= 65536);
   await removeTerminalArtifactDirectory(path.dirname(outputPath));

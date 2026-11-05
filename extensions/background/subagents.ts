@@ -8,7 +8,6 @@
  * - subagent_wait: block until the listed subagents settle or ask a question.
  * - subagent_message: answer a pending question or steer/continue a subagent.
  * - subagent_cancel: stop one or more running subagents.
- * - subagent_check: peek at a subagent's status and recent activity.
  * - subagent_list: list all subagents.
  *
  * Subagent results are delivered automatically when they settle. The parent
@@ -30,7 +29,6 @@ import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   formatElapsed,
-  latestText,
   REASONING_EFFORTS,
   type ReasoningEffort,
   type PersistedSubagent,
@@ -49,8 +47,6 @@ import {
   SUBAGENT_MESSAGE_TOOL_DESCRIPTION,
   SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS,
   SUBAGENT_CANCEL_TOOL_DESCRIPTION,
-  SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS,
-  SUBAGENT_CHECK_TOOL_DESCRIPTION,
   SUBAGENT_LIST_TOOL_DESCRIPTION,
   SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS,
   SUBAGENT_SPAWN_PROMPT_GUIDELINES,
@@ -112,6 +108,25 @@ function describeSubagent(snap: SubagentSnapshot) {
   ].filter(Boolean);
   const status = snap.pendingQuestions.length > 0 ? "waiting for answer" : snap.status;
   return `${snap.id} [${status}] "${snap.title}" (${details.join(", ")})`;
+}
+
+/** One line per subagent: header plus what it is doing now, any error, and any pending question. */
+function describeSubagentProgress(snap: SubagentSnapshot) {
+  const liveTool = snap.liveTools.at(-1);
+  const activity = liveTool
+    ? `running ${liveTool.name}${liveTool.argsPreview ? ` -- ${liveTool.argsPreview}` : ""}`
+    : snap.queued.length > 0
+      ? "processing queued parent message"
+      : undefined;
+  const question = snap.pendingQuestions[0];
+  return [
+    describeSubagent(snap),
+    snap.errorText && `error: ${snap.errorText}`,
+    activity,
+    question && `question: ${question.text}`,
+  ]
+    .filter(Boolean)
+    .join(" | ");
 }
 
 function truncatedOutput(snap: SubagentSnapshot, maxBytes = SUBAGENT_OUTPUT_MAX_BYTES): string {
@@ -673,55 +688,6 @@ function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentContr
     },
   });
   pi.registerTool({
-    name: "subagent_check",
-    label: "Check Subagent",
-    description: SUBAGENT_CHECK_TOOL_DESCRIPTION,
-    parameters: Type.Object({
-      id: Type.String({
-        description: SUBAGENT_CHECK_PARAMETER_DESCRIPTIONS.id,
-      }),
-    }),
-    renderCall(args, theme) {
-      return new Text(
-        theme.fg("toolTitle", "subagent_check") + (args.id ? " " + theme.fg("dim", String(args.id)) : ""),
-        0,
-        0,
-      );
-    },
-    async execute(_toolCallId, params) {
-      const manager = await controller.getManager();
-      const snap = manager.view.get(params.id);
-      if (!snap) {
-        const known = manager.view.list().map((s) => s.id);
-        throw new Error(`Unknown subagent id "${params.id}". Known: ${known.join(", ") || "none"}.`);
-      }
-      let text = `${describeSubagent(snap)}\nTurns: ${snap.turns}\nLast activity: ${new Date(snap.lastActivityAt).toISOString()}`;
-      if (snap.errorText) text += `\nError: ${snap.errorText}`;
-      const liveTool = snap.liveTools.at(-1);
-      if (liveTool)
-        text += `\nCurrent activity: ${liveTool.name}${liveTool.argsPreview ? ` -- ${liveTool.argsPreview}` : ""}`;
-      else if (snap.queued.length > 0) text += "\nCurrent activity: processing queued parent message";
-      const question = snap.pendingQuestions[0];
-      if (question) text += `\nPending question: ${question.text}`;
-      const output = latestText(snap);
-      if (output) {
-        const preview = truncateHead(output, { maxBytes: 2048, maxLines: 20 });
-        text += `\n\nLatest output:\n${preview.content}`;
-        if (preview.truncated) text += "\n[...]";
-      } else if (snap.status === "running") text += "\n\n(no text output yet)";
-      return {
-        content: [{ type: "text", text }],
-        details: {
-          id: snap.id,
-          status: snap.status,
-          turns: snap.turns,
-          lastActivityAt: snap.lastActivityAt,
-          ...(liveTool === undefined ? {} : { currentActivity: liveTool.name }),
-        },
-      };
-    },
-  });
-  pi.registerTool({
     name: "subagent_list",
     label: "List Subagents",
     description: SUBAGENT_LIST_TOOL_DESCRIPTION,
@@ -732,7 +698,7 @@ function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentContr
     async execute() {
       const manager = await controller.getManager();
       const subs = manager.view.list();
-      const text = subs.length === 0 ? "No subagents." : subs.map((snap) => describeSubagent(snap)).join("\n");
+      const text = subs.length === 0 ? "No subagents." : subs.map(describeSubagentProgress).join("\n");
       return {
         content: [{ type: "text", text }],
         details: {

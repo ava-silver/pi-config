@@ -1,15 +1,12 @@
 /**
- * Background shells -- run long-lived shell commands, inspect output, or
- * cancel them.
+ * Background shells -- run long-lived shell commands (fire and forget).
  *
  * Tools (for the parent LLM):
- * - background_shell_run: start a long-running command in the background and return an id immediately (command, title, working_dir).
+ * - background_shell_run: start a long-running command in the background; returns an id and the output log path (command, title, working_dir).
  * - background_shell_cancel: kill one or more background shells.
- * - background_shell_check: peek at status and recent output.
- * - background_shell_list: list all background shells.
  *
- * Shell output is delivered automatically when the command settles. The parent
- * can inspect or cancel it. `/background` opens the shared task picker.
+ * The parent is never woken when a shell exits; it reads the log file to
+ * check on it. `/background` opens the shared task picker.
  */
 
 import * as child_process from "node:child_process";
@@ -22,7 +19,6 @@ import {
   formatSize,
   truncateTail,
   type ExtensionAPI,
-  type ExtensionContext,
   type KeybindingsManager,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
@@ -37,8 +33,6 @@ import type { BackgroundHub } from "./src/hub.ts";
 
 const OUTPUT_CAP_BYTES = 512 * 1024; // rolling buffer cap per terminal
 export const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
-const CHECK_PREVIEW_BYTES = 4 * 1024;
-const FOLLOW_UP_BYTES = 24 * 1024;
 export const MAX_RUNNING_TERMINALS = 16;
 export const MAX_TRACKED_TERMINALS = 128;
 
@@ -85,11 +79,6 @@ function elapsed(t: Terminal): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
-}
-
-function describe(t: Terminal): string {
-  const artifact = artifactNotice(t);
-  return `${t.id} [${t.status}] "${t.title}" (${elapsed(t)}, ${t.cwd})${artifact ? ` ${artifact}` : ""}`;
 }
 
 function pauseOutput(t: Terminal): void {
@@ -193,27 +182,6 @@ function artifactNotice(t: Terminal): string | undefined {
   return undefined;
 }
 
-function terminalOutput(t: Terminal, maxBytes = DEFAULT_MAX_BYTES): TerminalTextResult {
-  const artifact = artifactNotice(t);
-  const outputNotice =
-    t.artifactStatus === "available"
-      ? `[Output truncated at ${formatSize(maxBytes)}. Full output: ${t.artifactPath}]`
-      : `[Output truncated at ${formatSize(maxBytes)}. ${artifact}]`;
-  const reservedBytes =
-    Buffer.byteLength(outputNotice, "utf8") + (artifact ? Buffer.byteLength(artifact, "utf8") + 1 : 0) + 1;
-  const truncation = truncateTail(outputText(t) || "(no output)", {
-    maxBytes: Math.max(0, Math.min(maxBytes, DEFAULT_MAX_BYTES) - reservedBytes),
-    maxLines: DEFAULT_MAX_LINES - (artifact ? 2 : 1),
-  });
-  const notices = [truncation.truncated ? outputNotice : undefined, artifact].filter(
-    (notice): notice is string => notice !== undefined,
-  );
-  return {
-    text: truncation.content + (notices.length ? `\n${notices.join("\n")}` : ""),
-    truncated: truncation.truncated,
-  };
-}
-
 export function settledTerminalIdsToPrune(
   terminals: ReadonlyArray<{
     id: string;
@@ -243,9 +211,7 @@ export async function removeTerminalArtifactDirectory(artifactDir: string | unde
 interface ShellManager {
   terminals: Map<string, Terminal>;
   listeners: Set<() => void>;
-  start(ctx: ExtensionContext): void;
   shutdown(): Promise<void>;
-  flushPending(): void;
   refresh(): void;
   spawn(opts: { command: string; title: string; cwd: string }, signal?: AbortSignal): Promise<Terminal>;
   kill(terminal: Terminal, notify: boolean): boolean;
@@ -293,11 +259,9 @@ function createTerminal(
   };
 }
 
-function createShellManager(pi: ExtensionAPI): ShellManager {
+function createShellManager(): ShellManager {
   const terminals = new Map<string, Terminal>();
-  const pending = new Map<string, Terminal>();
   const listeners = new Set<() => void>();
-  let sessionCtx: ExtensionContext | undefined;
   const updateStatus = () => {
     const visible = [...terminals.values()].filter((terminal) => !terminal.killRequested);
     if (visible.length === 0) {
@@ -320,38 +284,6 @@ function createShellManager(pi: ExtensionAPI): ShellManager {
   const notifyListeners = () => {
     for (const listener of listeners) listener();
   };
-  const deliverResult = (terminal: Terminal) => {
-    const verb = terminal.status === "error" ? "failed" : "finished";
-    const exitInfo = terminal.exitCode !== undefined ? ` (exit ${terminal.exitCode})` : "";
-    const { text: body } = terminalOutput(terminal, FOLLOW_UP_BYTES);
-    pi.sendMessage(
-      {
-        customType: "terminal-result",
-        content: truncateTerminalText(
-          `Background shell ${terminal.id} "${terminal.title}" ${verb}${exitInfo}\n\n${body}`,
-        ).text,
-        display: true,
-        details: {
-          id: terminal.id,
-          title: terminal.title,
-          status: terminal.status,
-          exitCode: terminal.exitCode,
-        },
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-  };
-  const flushPending = () => {
-    for (const terminal of pending.values()) deliverResult(terminal);
-    pending.clear();
-  };
-  const onSettled = (terminal: Terminal) => {
-    updateStatus();
-    notifyListeners();
-    if (!sessionCtx) return;
-    pending.set(terminal.id, { ...terminal });
-    if (sessionCtx.isIdle()) flushPending();
-  };
   const closeArtifact = async (terminal: Terminal) => {
     await finishArtifact(terminal);
     terminal.abortCleanup?.();
@@ -361,7 +293,6 @@ function createShellManager(pi: ExtensionAPI): ShellManager {
     terminal: Terminal,
     status: TerminalStatus,
     exitCode: number | undefined,
-    deliver: boolean,
     notify: boolean,
   ): Promise<void> => {
     if (terminal.settling) return terminal.settling;
@@ -372,8 +303,7 @@ function createShellManager(pi: ExtensionAPI): ShellManager {
       terminal.status = status;
       terminal.endedAt = Date.now();
       terminal.proc = undefined;
-      if (deliver) onSettled(terminal);
-      else if (notify) {
+      if (notify) {
         notifyListeners();
         updateStatus();
       }
@@ -391,7 +321,6 @@ function createShellManager(pi: ExtensionAPI): ShellManager {
       const terminal = terminals.get(id);
       if (!terminal) continue;
       terminals.delete(id);
-      pending.delete(id);
       void removeArtifact(terminal);
     }
   };
@@ -399,7 +328,6 @@ function createShellManager(pi: ExtensionAPI): ShellManager {
     if (terminal.status !== "running" || terminal.settling || terminal.killRequested) return false;
     terminal.killRequested = true;
     terminal.killNotify = notify;
-    pending.delete(terminal.id);
     appendOutput(terminal, "\n[process killed]\n");
     if (terminal.pid !== undefined) killProcessTree(terminal.pid);
     return true;
@@ -463,8 +391,7 @@ function createShellManager(pi: ExtensionAPI): ShellManager {
         terminal,
         killed || error || code !== 0 ? "error" : "done",
         killed ? undefined : (code ?? undefined),
-        !killed,
-        killed && terminal.killNotify,
+        !killed || terminal.killNotify,
       );
     };
     proc.on("close", (code: number | null) => settle(code));
@@ -484,15 +411,9 @@ function createShellManager(pi: ExtensionAPI): ShellManager {
       updateStatus();
       notifyListeners();
     },
-    flushPending,
     spawn,
     kill,
-    start: (ctx) => {
-      sessionCtx = ctx;
-    },
     async shutdown() {
-      sessionCtx = undefined;
-      pending.clear();
       listeners.clear();
       const tracked = [...terminals.values()];
       for (const terminal of tracked) kill(terminal, false);
@@ -505,8 +426,7 @@ function createShellManager(pi: ExtensionAPI): ShellManager {
 
 function registerShellLifecycle(pi: ExtensionAPI, background: BackgroundHub, shells: ShellManager) {
   let unregisterProvider: (() => void) | undefined;
-  pi.on("session_start", (_event, ctx) => {
-    shells.start(ctx);
+  pi.on("session_start", () => {
     unregisterProvider?.();
     unregisterProvider = background.registerProvider("terminals", {
       label: "Background Shells",
@@ -557,7 +477,6 @@ function registerShellLifecycle(pi: ExtensionAPI, background: BackgroundHub, she
       },
     });
   });
-  pi.on("agent_settled", () => shells.flushPending());
   pi.on("session_shutdown", async () => {
     unregisterProvider?.();
     unregisterProvider = undefined;
@@ -570,7 +489,7 @@ function registerShellTools(pi: ExtensionAPI, shells: ShellManager) {
     name: "background_shell_run",
     label: "Run Background Shell",
     description:
-      "Run a shell command expected to keep running, such as a dev server. Use the bash tool for commands that finish on their own. Returns immediately with a background shell ID. Use background_shell_check to peek at live output.",
+      "Run a long-lived command in the background, such as a dev server. Returns immediately with a shell ID and the output log path; you are not notified when it exits. Read the log to check on it. Use the bash tool for any command whose result you need.",
     parameters: Type.Object({
       command: Type.String({ description: "Shell command to execute" }),
       title: Type.String({
@@ -608,7 +527,7 @@ function registerShellTools(pi: ExtensionAPI, shells: ShellManager) {
           {
             type: "text",
             text: truncateTerminalText(
-              `Started background shell ${terminal.id} "${terminal.title}" (pid ${terminal.pid ?? "?"}) in ${cwd}${artifactNotice(terminal) ? `\n${artifactNotice(terminal)}` : ""}`,
+              `Started background shell ${terminal.id} "${terminal.title}" (pid ${terminal.pid ?? "?"}) in ${cwd}\n${terminal.artifactPath ? `Output log: ${terminal.artifactPath}` : artifactNotice(terminal)}`,
             ).text,
           },
         ],
@@ -660,68 +579,10 @@ function registerShellTools(pi: ExtensionAPI, shells: ShellManager) {
       };
     },
   });
-  pi.registerTool({
-    name: "background_shell_check",
-    label: "Check Background Shell",
-    description: "Peek at a background shell's current status and recent output without blocking.",
-    parameters: Type.Object({
-      id: Type.String({ description: "Terminal ID to check" }),
-    }),
-    async execute(_callId, params) {
-      const terminal = shells.terminals.get(params.id);
-      if (!terminal)
-        throw new Error(
-          `Unknown background shell id "${params.id}". Known: ${[...shells.terminals.keys()].join(", ") || "none"}.`,
-        );
-      let text = `${describe(terminal)}\nCommand: ${terminal.command}`;
-      if (terminal.exitCode !== undefined) text += `\nExit code: ${terminal.exitCode}`;
-      const { text: preview } = terminalOutput(terminal, CHECK_PREVIEW_BYTES);
-      text += preview ? `\n\nRecent output:\n${preview}` : "\n\n(no output yet)";
-      return {
-        content: [
-          {
-            type: "text",
-            text: truncateTerminalText(text, "[Response truncated. See artifact status above.]").text,
-          },
-        ],
-        details: {
-          id: terminal.id,
-          status: terminal.status,
-          exitCode: terminal.exitCode,
-          artifactStatus: terminal.artifactStatus,
-        },
-      };
-    },
-  });
-  pi.registerTool({
-    name: "background_shell_list",
-    label: "List Background Shells",
-    description: "List all background shells and their current status.",
-    parameters: Type.Object({}),
-    async execute() {
-      const all = [...shells.terminals.values()];
-      return {
-        content: [
-          {
-            type: "text",
-            text: truncateTerminalText(all.length === 0 ? "No background shells." : all.map(describe).join("\n")).text,
-          },
-        ],
-        details: {
-          terminals: all.map((terminal) => ({
-            id: terminal.id,
-            title: terminal.title,
-            status: terminal.status,
-            artifactStatus: terminal.artifactStatus,
-          })),
-        },
-      };
-    },
-  });
 }
 
 export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
-  const shells = createShellManager(pi);
+  const shells = createShellManager();
   registerShellLifecycle(pi, background, shells);
   registerShellTools(pi, shells);
 }

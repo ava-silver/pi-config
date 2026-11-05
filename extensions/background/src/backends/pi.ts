@@ -85,7 +85,6 @@ const TOOL_SUMMARY_KEY = {
   find: "pattern",
   source_check: "claim",
   subagent_spawn: "name",
-  subagent_check: "id",
   subagent_wait: "ids",
   subagent_cancel: "ids",
   subagent_list: null,

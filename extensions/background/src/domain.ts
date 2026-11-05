@@ -214,15 +214,8 @@ export interface SubagentSnapshot {
   readonly pendingQuestions: ReadonlyArray<SubagentQuestion>;
   /** Final text of the most recent completed run (v1 `finalOutput`). */
   readonly finalText: string;
-  /** Count of finalized assistant messages (for subagent_check). */
+  /** Count of finalized assistant messages. */
   readonly turns: number;
-}
-
-/** Final text, or the live streaming buffer while a run is active (v1 `latestOutput`). */
-export function latestText(snap: SubagentSnapshot) {
-  const live = snap.liveAssistant?.text.trim();
-  if (live) return live;
-  return snap.finalText;
 }
 
 export function formatElapsed(snap: SubagentSnapshot) {
