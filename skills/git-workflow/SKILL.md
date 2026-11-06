@@ -8,10 +8,10 @@ user_invocable: false
 
 ## Choose the workflow
 
-Run `is-graphite` in the repository before choosing mutation or sync commands.
+Run `is-graphite` in the repository before choosing mutation or sync commands. It prints the status, and also exits 0 or 1 to match. Pass `-q` to suppress the text and rely on the exit code alone.
 
-- `graphite set up` -- use the Graphite commands below.
-- `graphite not set up` -- never use `gt`; use normal Git commands. `git cr` and `git ac` already adapt to either workflow. Note that for config repos like `dotfiles` or `skills`, you should just commit to the working branch.
+- `graphite set up` (exit 0) -- use the Graphite commands below.
+- `graphite not set up` (exit 1) -- never use `gt`; use normal Git commands. `git cr` and `git ac` already adapt to either workflow. Note that for config repos like `dotfiles` or `skills`, you should just commit to the working branch.
 
 ## Branch ownership safety
 Before changing commits, tracking, parents, or remotes, run `git branch --show-current` and confirm the branch is the current user's (`$USER/*`) or a repository default branch.
