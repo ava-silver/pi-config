@@ -26,6 +26,8 @@ interface ContainerLike extends ComponentLike {
 
 interface AssistantMessageLike {
   updateContent(message: { content: Array<{ type: string }> }): void;
+  setExpanded?(expanded: boolean): void;
+  lastThinkingMessage?: { content: Array<{ type: string }> };
 }
 
 interface ToolRow extends ContainerLike {
@@ -83,6 +85,8 @@ type AssistantPatchState = {
   runtime: Runtime;
   originalUpdateContent: AssistantMessageLike["updateContent"];
   patchedUpdateContent?: AssistantMessageLike["updateContent"];
+  originalSetExpanded?: AssistantMessageLike["setExpanded"];
+  expanded: boolean;
 };
 
 type CallSummary = {
@@ -302,15 +306,23 @@ function installAssistantPatch(runtime: Runtime): AssistantPatchState | undefine
   const state: AssistantPatchState = {
     runtime,
     originalUpdateContent: proto.updateContent,
+    originalSetExpanded: proto.setExpanded,
+    expanded: false,
   };
   const patchedUpdateContent = function updateContentWithoutThinking(
     this: AssistantMessageLike,
     message: { content: Array<{ type: string }> },
   ): void {
+    this.lastThinkingMessage = message;
     state.originalUpdateContent.call(this, {
       ...message,
-      content: message.content.filter((content) => content.type !== "thinking"),
+      content: state.expanded ? message.content : message.content.filter((content) => content.type !== "thinking"),
     });
+  };
+  proto.setExpanded = function setExpandedShowThinking(this: AssistantMessageLike, expanded: boolean): void {
+    state.expanded = expanded;
+    state.originalSetExpanded?.call(this, expanded);
+    if (this.lastThinkingMessage) patchedUpdateContent.call(this, this.lastThinkingMessage);
   };
 
   state.patchedUpdateContent = patchedUpdateContent;
@@ -331,6 +343,8 @@ function uninstallAssistantPatch(state: AssistantPatchState | undefined): void {
     return;
   }
   proto.updateContent = state.originalUpdateContent;
+  if (state.originalSetExpanded) proto.setExpanded = state.originalSetExpanded;
+  else delete proto.setExpanded;
   delete proto[ASSISTANT_PATCH];
 }
 
@@ -489,6 +503,7 @@ export default async function (pi: ExtensionAPI) {
       toolPatch.cache = new WeakMap();
     }
     ctx.ui.setToolsExpanded(false);
+    if (assistantPatch) assistantPatch.expanded = false;
   });
 
   pi.on("session_shutdown", () => {
