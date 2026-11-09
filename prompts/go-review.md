@@ -24,7 +24,7 @@ Read its `skills/go-review/SKILL.md` and all of these live rubrics:
 
 If the plugin or any required file is unavailable, report the missing path and stop. Do not copy or modify Marketplace content.
 
-Launch exactly two independent `openai-codex/gpt-5.6-sol` subagents with high reasoning effort in parallel. Both are read-only and must not change files, commit, push, or post to GitHub.
+Launch exactly two independent `anthropic/claude-opus-5-5` subagents with high reasoning effort in parallel. Both are read-only and must not change files, commit, push, or post to GitHub.
 
 1. **General reviewer**: Follow `code-review` for this PR. Inspect the PR diff, surrounding code, call sites, tests, relevant specs, and repository guidance. Report only actionable findings with severity, PR-head `file:line`, evidence, impact, and concise fix direction.
 2. **Go reviewer**: Review the same PR using the live Marketplace `go-review` skill and all seven specialist rubrics. Cover Go correctness, APIs, errors, concurrency, tests, structure, naming, performance, and style. Do not report `gofmt` or other automatic-formatting nits. Return only actionable findings with severity, PR-head `file:line`, evidence, impact, and concise fix direction.
