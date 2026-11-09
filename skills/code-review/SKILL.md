@@ -45,6 +45,8 @@ Label heuristic findings as maintainability judgements, not hard violations. Exc
 
 ### Spec and Correctness
 
+Validate every finding before reporting it: run the code, tests, or a minimal repro, or trace the failure path. Do not give up or report an unverified suspicion because validation is hard; that shifts the work to the user. Try harder (build a repro, stub dependencies, read the source). If validation needs access you lack (for example credentials for an end-to-end test), ask the user for that specific help. Mark any finding that remains unvalidated as such, with what blocked it.
+
 Find missing or partial requirements, scope creep, incorrect implementations, logic errors, regressions, crashes, security problems, data loss, races, leaks, broken error handling, contract or compatibility breaks, and tests that miss plausible failures. Quote the relevant requirement when available. Do not report speculation without an evidence-backed failure path.
 
 ## Output
