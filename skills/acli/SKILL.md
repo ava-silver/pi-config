@@ -15,7 +15,7 @@ Use `--json` when you need structured output. For write commands, ask for confir
 ```bash
 acli jira workitem view SVLS-123 --json
 acli jira workitem search --jql 'project = SVLS' --json
-acli jira workitem create --project SVLS --type Task --parent SVLS-XXXX --summary 'Title' --description-file description.md --label 'Team - SVLS' --json
+acli jira workitem create --project SVLS --type Task --parent SVLS-XXXX --summary 'Title' --description-file description.md --json
 acli jira workitem edit --key SVLS-123 --description-file description.md --yes --json
 acli jira workitem link create --out SVLS-123 --in SVLS-456 --type Blocks --yes
 acli confluence page view --id 123456789 --body-format view --json
@@ -30,7 +30,6 @@ Use `acli jira workitem create --generate-json` when you must set custom fields.
 | Project | SVLS (`15505`) |
 | Issue type | Task (`10002`) |
 | Team (`customfield_15831`) | Serverless Onboarding & Enablement (`22498`) |
-| Labels | `["Team - SVLS"]` |
 | Priority | Omit entirely |
 | Assignee | Leave blank unless requested |
 | Parent (epic) | Always required -- ask if not provided |
