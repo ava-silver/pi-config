@@ -21,6 +21,16 @@ Before reviewing, inspect relevant surrounding code and tests, then find:
 
 Inspect every changed hunk and report actionable findings with severity, file/line, evidence, impact, and a concrete fix.
 
+### Verification
+
+This applies to both axes. Validate every finding before reporting it: run the code, tests, or a minimal repro; trace the failure path; or look up the claim (callers, nullability, whether a pattern recurs). Do not give up because validation is hard; that shifts the work to the user. Try harder (build a repro, stub dependencies, read the source). If validation needs access you lack (for example credentials for an end-to-end test), ask the user for that specific help.
+
+Every finding carries one status:
+- `Verified: <how>` -- for example the test run, repro, traced path with file:line, or grep result.
+- `Unverified: <what blocked it>` -- phrase the finding as a question, not an assertion.
+
+Drop suspicions you could not validate and that are not worth asking about.
+
 ### Standards
 Cite documented rules when present; otherwise show the recurring surrounding-code pattern. Apply these smell heuristics:
 
@@ -45,10 +55,10 @@ Label heuristic findings as maintainability judgements, not hard violations. Exc
 
 ### Spec and Correctness
 
-Validate every finding before reporting it: run the code, tests, or a minimal repro, or trace the failure path. Do not give up or report an unverified suspicion because validation is hard; that shifts the work to the user. Try harder (build a repro, stub dependencies, read the source). If validation needs access you lack (for example credentials for an end-to-end test), ask the user for that specific help. Mark any finding that remains unvalidated as such, with what blocked it.
-
-Find missing or partial requirements, scope creep, incorrect implementations, logic errors, regressions, crashes, security problems, data loss, races, leaks, broken error handling, contract or compatibility breaks, and tests that miss plausible failures. Quote the relevant requirement when available. Do not report speculation without an evidence-backed failure path.
+Find missing or partial requirements, scope creep, incorrect implementations, logic errors, regressions, crashes, security problems, data loss, races, leaks, broken error handling, contract or compatibility breaks, and tests that miss plausible failures. Quote the relevant requirement when available.
 
 ## Output
+
+Before writing output, reread each finding. Drop it or rephrase it as a question if its status lacks concrete evidence.
 
 Report `## Standards` and `## Spec and Correctness` separately. If an axis has no findings, say so. End with finding counts and the highest-severity issue in each axis; do not collapse them into one ranking.
