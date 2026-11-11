@@ -300,7 +300,6 @@ function foldEvent(state: ManagerState, entry: Entry, event: SubagentEvent) {
     }
     case "AssistantMessage":
       snapshot.transcript.push({ kind: "assistant", parts: event.parts });
-      if (typeof event.cost === "number" && Number.isFinite(event.cost)) snapshot.cost += event.cost;
       delete snapshot.liveAssistant;
       snapshot.turns++;
       break;
@@ -356,6 +355,7 @@ function foldEvent(state: ManagerState, entry: Entry, event: SubagentEvent) {
         ...(tokens === undefined ? {} : { tokens }),
         ...(contextWindow === undefined ? {} : { contextWindow }),
       };
+      if (event.cost !== undefined) snapshot.cost = event.cost;
       break;
     }
     case "MetaChanged":

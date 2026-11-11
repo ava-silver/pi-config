@@ -18,6 +18,7 @@ import {
   DEFAULT_MAX_LINES,
   formatSize,
   truncateTail,
+  type EventBus,
   type ExtensionAPI,
   type KeybindingsManager,
   type Theme,
@@ -259,13 +260,13 @@ function createTerminal(
   };
 }
 
-function createShellManager(): ShellManager {
+function createShellManager(events: EventBus): ShellManager {
   const terminals = new Map<string, Terminal>();
   const listeners = new Set<() => void>();
   const updateStatus = () => {
     const visible = [...terminals.values()].filter((terminal) => !terminal.killRequested);
     if (visible.length === 0) {
-      registerTransientSegment("terminals", null);
+      registerTransientSegment(events, "terminals", null);
       return;
     }
     const running = visible.filter((terminal) => terminal.status === "running").length;
@@ -275,7 +276,7 @@ function createShellManager(): ShellManager {
       visible.length - running - failed > 0 ? `${visible.length - running - failed} done` : undefined,
       failed > 0 ? `${failed} failed` : undefined,
     ].filter((part): part is string => part !== undefined);
-    registerTransientSegment("terminals", {
+    registerTransientSegment(events, "terminals", {
       text: `$ ${parts.join(" · ")}`,
       bg: failed > 0 ? "#e78284" : running > 0 ? "#81c8be" : "#a6d189",
       fg: "#1e2030",
@@ -419,7 +420,7 @@ function createShellManager(): ShellManager {
       for (const terminal of tracked) kill(terminal, false);
       terminals.clear();
       await Promise.all(tracked.map(removeArtifact));
-      registerTransientSegment("terminals", null);
+      registerTransientSegment(events, "terminals", null);
     },
   };
 }
@@ -582,7 +583,7 @@ function registerShellTools(pi: ExtensionAPI, shells: ShellManager) {
 }
 
 export function setupShells(pi: ExtensionAPI, background: BackgroundHub) {
-  const shells = createShellManager();
+  const shells = createShellManager(pi.events);
   registerShellLifecycle(pi, background, shells);
   registerShellTools(pi, shells);
 }

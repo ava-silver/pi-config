@@ -27,6 +27,7 @@ import {
   shutdownAndDisposeChildSession,
   waitForChildSessionOperation,
 } from "../../../shared/child-session.ts";
+import { sessionCost } from "../../../shared/session-cost.ts";
 import { createToolCallTimeoutGuard } from "../../../shared/tool-call-timeout.ts";
 
 type ThinkingLevel = NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["thinkingLevel"]>;
@@ -294,6 +295,7 @@ function createChildSession(setup: ChildSessionSetup) {
 
 interface SessionControl {
   currentMeta(): SubagentMeta;
+  emitUsage(): void;
   handleEvent(event: AgentSessionEvent): void;
   startRun(text: string): void;
 }
@@ -331,6 +333,7 @@ function createSessionControl(setup: SessionControlSetup): SessionControl {
       _tag: "UsageChanged",
       ...(typeof tokens === "number" ? { tokens } : {}),
       ...(contextWindow === undefined ? {} : { contextWindow }),
+      cost: sessionCost(session.sessionManager.getEntries()),
     });
   };
   const settle = () => {
@@ -396,11 +399,9 @@ function createSessionControl(setup: SessionControlSetup): SessionControl {
           const text = userText(event.message as Message);
           if (text.trim()) emit({ _tag: "UserMessage", text });
         } else if (role === "assistant") {
-          const cost = (event.message as AssistantMessage).usage?.cost?.total;
           emit({
             _tag: "AssistantMessage",
             parts: assistantParts(event.message as AssistantMessage),
-            ...(typeof cost === "number" && Number.isFinite(cost) ? { cost } : {}),
           });
           emitUsage();
           emit({ _tag: "MetaChanged", meta: currentMeta() });
@@ -449,6 +450,9 @@ function createSessionControl(setup: SessionControlSetup): SessionControl {
           ],
         });
         break;
+      case "entry_appended":
+        emitUsage();
+        break;
       case "agent_settled":
         settle();
         break;
@@ -463,7 +467,7 @@ function createSessionControl(setup: SessionControlSetup): SessionControl {
       if (!session.isStreaming) settle();
     });
   };
-  return { currentMeta, handleEvent, startRun };
+  return { currentMeta, emitUsage, handleEvent, startRun };
 }
 
 interface FinalizerSetup {
@@ -514,12 +518,9 @@ function replayTranscript(session: AgentSession, emit: Emit) {
       const text = userText(message as Message);
       if (text.trim()) emit({ _tag: "UserMessage", text });
     } else if (role === "assistant") {
-      const assistant = message as AssistantMessage;
-      const cost = assistant.usage?.cost?.total;
       emit({
         _tag: "AssistantMessage",
-        parts: assistantParts(assistant),
-        ...(typeof cost === "number" && Number.isFinite(cost) ? { cost } : {}),
+        parts: assistantParts(message as AssistantMessage),
       });
     }
   }
@@ -573,8 +574,10 @@ const makePiSession = (
     yield* Effect.addFinalizer(() => closePiSession({ session, state, pendingAnswers, unsubscribe, events }));
     yield* Effect.try(() => session.sessionManager.appendSessionInfo(`subagent: ${task.title}`)).pipe(Effect.ignore);
     emit({ _tag: "MetaChanged", meta: control.currentMeta() });
-    if (sessionFilePath) replayTranscript(session, emit);
-    else control.startRun(task.prompt);
+    if (sessionFilePath) {
+      replayTranscript(session, emit);
+      control.emitUsage();
+    } else control.startRun(task.prompt);
     return {
       meta: Effect.sync(() => control.currentMeta()),
       events: Stream.fromQueue(events),

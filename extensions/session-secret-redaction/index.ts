@@ -189,7 +189,11 @@ export default function sessionSecretRedaction(pi: ExtensionAPI): void {
 
   function setStatus(ctx: ExtensionContext, text?: string): void {
     if (ctx.mode !== "tui") return;
-    registerTransientSegment("session-secret-redaction", text ? { text, bg: "#414559", fg: "#838ba7" } : null);
+    registerTransientSegment(
+      pi.events,
+      "session-secret-redaction",
+      text ? { text, bg: "#414559", fg: "#838ba7" } : null,
+    );
   }
 
   function enqueue<T>(task: () => Promise<T>): Promise<T> {

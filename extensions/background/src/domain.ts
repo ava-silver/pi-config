@@ -139,7 +139,6 @@ export type SubagentEvent =
   | {
       readonly _tag: "AssistantMessage";
       readonly parts: ReadonlyArray<TranscriptPart>;
-      readonly cost?: number;
     }
   | {
       readonly _tag: "ToolStart";
@@ -171,6 +170,8 @@ export type SubagentEvent =
       readonly _tag: "UsageChanged";
       readonly tokens?: number;
       readonly contextWindow?: number;
+      /** Cumulative billed cost of the subagent session. */
+      readonly cost?: number;
     }
   | { readonly _tag: "MetaChanged"; readonly meta: Partial<SubagentMeta> };
 
@@ -204,7 +205,7 @@ export interface SubagentSnapshot {
   readonly errorText?: string;
   readonly meta: SubagentMeta;
   readonly usage: { readonly tokens?: number; readonly contextWindow?: number };
-  /** Cumulative cost of finalized assistant messages. */
+  /** Cumulative billed cost, including cache warming and compaction. */
   readonly cost: number;
   readonly transcript: ReadonlyArray<TranscriptItem>;
   /** Streaming assistant buffers, cleared when the finalized message lands. */

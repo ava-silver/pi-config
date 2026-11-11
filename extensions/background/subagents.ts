@@ -191,12 +191,13 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
     }
     if (costKey)
       registerBackgroundCost(
+        pi.events,
         costKey,
         subs.reduce((total, snap) => total + snap.cost, 0),
       );
     if (!ui) return;
     if (subs.length === 0) {
-      registerTransientSegment("subagents", null);
+      registerTransientSegment(pi.events, "subagents", null);
       return;
     }
     const running = subs.filter((snap) => snap.status === "running").length;
@@ -209,7 +210,7 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
     if (done > 0) parts.push(`${done} done`);
     if (failed > 0) parts.push(`${failed} failed`);
     const bg = failed > 0 ? "#e78284" : running > 0 ? "#81c8be" : "#a6d189";
-    registerTransientSegment("subagents", {
+    registerTransientSegment(pi.events, "subagents", {
       text: parts.join(" · "),
       bg,
       fg: "#1e2030",
@@ -345,16 +346,16 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
       managerView?.setOnQuestion(undefined);
       unsubStatus?.();
       unsubStatus = undefined;
-      registerTransientSegment("subagents", null);
+      registerTransientSegment(pi.events, "subagents", null);
       if (preserve && sessionId) {
         savedSessions.set(sessionId, { runtime, managerPromise, managerView, resultDelivery, persistedSignatures });
       } else {
         resultDelivery.clear();
-        if (costKey) registerBackgroundCost(costKey, null);
+        if (costKey) registerBackgroundCost(pi.events, costKey, null);
         await runtime?.dispose();
         for (const [savedId, saved] of savedSessions) {
           saved.resultDelivery.clear();
-          registerBackgroundCost(`subagents:${savedId}`, null);
+          registerBackgroundCost(pi.events, `subagents:${savedId}`, null);
           await saved.runtime?.dispose();
         }
         savedSessions.clear();

@@ -3,8 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getTransientSegments } from "../shared/footer-segments.ts";
+import {
+  createEventBus,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
+import { createFooterSegmentStore } from "../shared/footer-segments.ts";
 import type { BackgroundHub } from "./src/hub.ts";
 import {
   MAX_ARTIFACT_BYTES,
@@ -19,7 +24,10 @@ type Tool = { execute: (...args: unknown[]) => Promise<ToolResult> };
 
 function shellTools() {
   const tools = new Map<string, Tool>();
+  const events = createEventBus();
+  const footer = createFooterSegmentStore(events, () => undefined);
   const pi = {
+    events,
     on: () => undefined,
     registerTool: (tool: Tool & { name: string }) => tools.set(tool.name, tool),
     sendMessage: () => undefined,
@@ -28,6 +36,7 @@ function shellTools() {
   return {
     run: tools.get("background_shell_run")!,
     cancel: tools.get("background_shell_cancel")!,
+    footer,
   };
 }
 
@@ -68,7 +77,7 @@ test("run result includes a private output log that receives the full output", a
 });
 
 test("cancelling waits for buffered artifact output", async () => {
-  const { run, cancel } = shellTools();
+  const { run, cancel, footer } = shellTools();
   const cwd = process.cwd();
   const started = await run.execute(
     "test",
@@ -82,7 +91,7 @@ test("cancelling waits for buffered artifact output", async () => {
 
   await waitForSize(outputPath, 65536);
   await cancel.execute("test", { ids: [started.details.id] });
-  assert.equal(getTransientSegments().get("terminals"), undefined);
+  assert.equal(footer.segments.get("terminals"), undefined);
   assert.ok((await fs.promises.readFile(outputPath)).length >= 65536);
   await removeTerminalArtifactDirectory(path.dirname(outputPath));
 });

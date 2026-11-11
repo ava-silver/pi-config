@@ -12,15 +12,16 @@
  *
  * Other extensions can inject temporary segments (e.g. spinners) via:
  *   import { registerTransientSegment } from "./shared/footer-segments.ts";
- *   registerTransientSegment("my-ext", { text: "⟳ fetching", bg: "#81c8be", fg: "#232634" });
- *   registerTransientSegment("my-ext", null); // clear
+ *   registerTransientSegment(pi.events, "my-ext", { text: "⟳ fetching", bg: "#81c8be", fg: "#232634" });
+ *   registerTransientSegment(pi.events, "my-ext", null); // clear
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
-import { getBackgroundCost, getTransientSegments, setTransientOnChange } from "./shared/footer-segments.ts";
+import { createFooterSegmentStore } from "./shared/footer-segments.ts";
+import { sessionCost } from "./shared/session-cost.ts";
 
 // ── Powerline characters ────────────────────────────────────────────────────
 const ARROW_RIGHT = "\uE0B4"; //  right half-circle
@@ -223,29 +224,6 @@ function formatTokens(tokens: number): string {
   return `${Math.round(tokens / 1_000_000)}M`;
 }
 
-type CostEntry = {
-  id?: string;
-  type?: string;
-  message?: { role?: string; usage?: { cost?: { total?: number } } };
-};
-
-interface BranchCostSummary {
-  cost: number;
-  entryIds: Set<string>;
-}
-
-export function activeBranchCost(entries: readonly CostEntry[]): BranchCostSummary {
-  let cost = 0;
-  const entryIds = new Set<string>();
-  for (const entry of entries) {
-    const amount = entry.message?.role === "assistant" ? entry.message.usage?.cost?.total : undefined;
-    if (typeof amount !== "number" || !Number.isFinite(amount)) continue;
-    cost += amount;
-    if (typeof entry.id === "string") entryIds.add(entry.id);
-  }
-  return { cost, entryIds };
-}
-
 // ── Extension ────────────────────────────────────────────────────────────────
 const MUTATING_TOOLS = new Set(["bash", "edit", "write"]);
 
@@ -256,14 +234,14 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
   let diff: NumstatTotals | null = null;
   let agentStartedAt: number | null = null;
   let agentFinishedAt: number | null = null;
-  let sessionCost = 0;
-  let countedEntryIds = new Set<string>();
+  let branchCost = 0;
+  let branchCostLeafId: string | null | undefined;
   let currentModel = "";
   let currentThinkingLevel: ThinkingLevel = "off";
   let refreshId = 0;
   let timeTimer: ReturnType<typeof setInterval> | null = null;
   let gitTimer: ReturnType<typeof setInterval> | null = null;
-  let cleanupTransient: (() => void) | null = null;
+  const footerSegments = createFooterSegmentStore(pi.events, () => tui?.requestRender());
 
   async function refreshGitState(ctx: ExtensionContext): Promise<void> {
     const id = ++refreshId;
@@ -287,9 +265,7 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
     savedCtx = ctx;
     currentModel = formatModelName(ctx.model?.id ?? "?");
     currentThinkingLevel = pi.getThinkingLevel();
-    ({ cost: sessionCost, entryIds: countedEntryIds } = activeBranchCost(
-      ctx.sessionManager.getBranch() as CostEntry[],
-    ));
+    branchCostLeafId = undefined;
     branch = null;
     diff = null;
     agentStartedAt = null;
@@ -302,7 +278,6 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
 
     ctx.ui.setFooter((_tui, _theme, footerData) => {
       tui = _tui;
-      cleanupTransient = setTransientOnChange(() => tui?.requestRender());
       const unsubBranch = footerData.onBranchChange(() => void refreshGitState(ctx));
 
       return {
@@ -321,7 +296,7 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
           const right: Seg[] = [];
 
           // Transient segments registered by other extensions (e.g. spinners)
-          for (const seg of getTransientSegments().values()) {
+          for (const seg of footerSegments.segments.values()) {
             right.push(seg);
           }
 
@@ -347,8 +322,15 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
           }
 
           // Session cost, including background subagents (always shown)
+          const leafId = ctx.sessionManager.getLeafId();
+          if (branchCostLeafId !== leafId) {
+            branchCostLeafId = leafId;
+            branchCost = sessionCost(ctx.sessionManager.getBranch());
+          }
           right.push({
-            text: formatCost(sessionCost + getBackgroundCost(`subagents:${ctx.sessionManager.getSessionId()}`)),
+            text: formatCost(
+              branchCost + footerSegments.backgroundCost(`subagents:${ctx.sessionManager.getSessionId()}`),
+            ),
             bg: C.panelAlt,
             fg: C.dim,
           });
@@ -384,8 +366,6 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
         invalidate() {},
 
         dispose() {
-          cleanupTransient?.();
-          cleanupTransient = null;
           unsubBranch();
         },
       };
@@ -393,13 +373,6 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
 
     // Kick off the first git-state read in parallel with session setup.
     void refreshGitState(ctx);
-  });
-
-  pi.on("session_tree", (_event, ctx) => {
-    ({ cost: sessionCost, entryIds: countedEntryIds } = activeBranchCost(
-      ctx.sessionManager.getBranch() as CostEntry[],
-    ));
-    tui?.requestRender();
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
@@ -432,22 +405,6 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
     tui?.requestRender();
   });
 
-  pi.on("message_end", (event, ctx) => {
-    const msg = event.message;
-    if (msg.role !== "assistant") return;
-
-    const entry = [...ctx.sessionManager.getEntries()]
-      .reverse()
-      .find((candidate: any) => candidate.type === "message" && candidate.message === msg);
-    if (entry?.id && countedEntryIds.has(entry.id)) return;
-    const cost = msg.usage?.cost?.total;
-    if (typeof cost === "number" && Number.isFinite(cost)) {
-      sessionCost += cost;
-      if (typeof entry?.id === "string") countedEntryIds.add(entry.id);
-    }
-    tui?.requestRender();
-  });
-
   pi.on("session_shutdown", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
 
@@ -459,8 +416,6 @@ export default function powerlineExtension(pi: ExtensionAPI): void {
       clearInterval(gitTimer);
       gitTimer = null;
     }
-    cleanupTransient?.();
-    cleanupTransient = null;
     savedCtx = null;
     refreshId++;
     tui = null;

@@ -305,7 +305,7 @@ export default function (pi: ExtensionAPI): void {
       const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
       let frame = 0;
       const tick = () => {
-        registerTransientSegment("pr-feedback", {
+        registerTransientSegment(pi.events, "pr-feedback", {
           text: `${SPINNER_FRAMES[frame++ % SPINNER_FRAMES.length]} PR feedback`,
           bg: "#81c8be",
           fg: "#1e2030",
@@ -330,7 +330,7 @@ export default function (pi: ExtensionAPI): void {
         return;
       } finally {
         clearInterval(spinner);
-        registerTransientSegment("pr-feedback", null);
+        registerTransientSegment(pi.events, "pr-feedback", null);
       }
 
       if (ctx.isIdle()) {

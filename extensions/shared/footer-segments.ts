@@ -1,20 +1,14 @@
 /**
- * Shared registry for transient powerline footer segments.
+ * Typed `pi.events` contract for powerline footer segments and background costs.
  *
- * Extensions that want a colored segment in the right-hand side of the footer
- * can call `registerTransientSegment` / clear with `null`. The footer reads
- * the registry on every render and re-renders whenever it changes.
+ * Pi loads each extension with its own module instances, so extensions share
+ * footer state through the event bus instead of module-level state.
  *
- * Usage (from any extension in the same process):
- *
- *   import { registerTransientSegment } from "../shared/footer-segments.ts";
- *
- *   // Show a segment:
- *   registerTransientSegment("my-ext", { text: "⟳ loading", bg: "#81c8be", fg: "#232634" });
- *
- *   // Clear it:
- *   registerTransientSegment("my-ext", null);
+ *   registerTransientSegment(pi.events, "my-ext", { text: "⟳ loading", bg: "#81c8be", fg: "#232634" });
+ *   registerTransientSegment(pi.events, "my-ext", null); // clear
  */
+
+import type { EventBus } from "@earendil-works/pi-coding-agent";
 
 export type TransientSegment = {
   /** Visible text — plain, no ANSI codes. Padded with spaces by the renderer. */
@@ -25,51 +19,54 @@ export type TransientSegment = {
   fg: string;
 };
 
-// Module-level singleton: one shared instance per process.
-const registry = new Map<string, TransientSegment>();
-const backgroundCosts = new Map<string, number>();
-let onChangeCallback: (() => void) | undefined;
+const SEGMENT_CHANNEL = "footer-segments:segment";
+const COST_CHANNEL = "footer-segments:background-cost";
 
 /**
  * Register or clear a transient segment. Segments appear in insertion order,
  * left-to-right, before the built-in right-side segments (context %, time, cost).
  */
-export function registerTransientSegment(key: string, segment: TransientSegment | null): void {
-  if (segment === null) {
-    if (!registry.has(key)) return; // no-op, skip needless re-render
-    registry.delete(key);
-  } else {
-    registry.set(key, segment);
-  }
-  onChangeCallback?.();
-}
-
-/** Read all active transient segments in insertion order. */
-export function getTransientSegments(): ReadonlyMap<string, TransientSegment> {
-  return registry;
+export function registerTransientSegment(events: EventBus, key: string, segment: TransientSegment | null): void {
+  events.emit(SEGMENT_CHANNEL, { key, segment });
 }
 
 /** Register or clear a background task cost for inclusion in the main session cost. */
-export function registerBackgroundCost(key: string, cost: number | null): void {
-  if (cost === null) {
-    if (!backgroundCosts.delete(key)) return;
-  } else {
-    backgroundCosts.set(key, cost);
-  }
-  onChangeCallback?.();
+export function registerBackgroundCost(events: EventBus, key: string, cost: number | null): void {
+  events.emit(COST_CHANNEL, { key, cost });
 }
 
-export function getBackgroundCost(key: string): number {
-  return backgroundCosts.get(key) ?? 0;
+export interface FooterSegmentStore {
+  readonly segments: ReadonlyMap<string, TransientSegment>;
+  backgroundCost(key: string): number;
+  dispose(): void;
 }
 
-/**
- * Called once by the footer extension. Returns a cleanup function.
- * Only one callback is active at a time (the footer owns this).
- */
-export function setTransientOnChange(fn: () => void): () => void {
-  onChangeCallback = fn;
-  return () => {
-    if (onChangeCallback === fn) onChangeCallback = undefined;
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
+const isSegment = (value: unknown): value is TransientSegment =>
+  isRecord(value) && typeof value.text === "string" && typeof value.bg === "string" && typeof value.fg === "string";
+
+/** Collect segments and background costs emitted by other extensions. Used by the footer. */
+export function createFooterSegmentStore(events: EventBus, onChange: () => void): FooterSegmentStore {
+  const segments = new Map<string, TransientSegment>();
+  const costs = new Map<string, number>();
+  const unsubscribers = [
+    events.on(SEGMENT_CHANNEL, (data) => {
+      if (!isRecord(data) || typeof data.key !== "string") return;
+      if (isSegment(data.segment)) segments.set(data.key, data.segment);
+      else if (data.segment !== null || !segments.delete(data.key)) return;
+      onChange();
+    }),
+    events.on(COST_CHANNEL, (data) => {
+      if (!isRecord(data) || typeof data.key !== "string") return;
+      if (typeof data.cost === "number" && Number.isFinite(data.cost)) costs.set(data.key, data.cost);
+      else if (data.cost !== null || !costs.delete(data.key)) return;
+      onChange();
+    }),
+  ];
+  return {
+    segments,
+    backgroundCost: (key) => costs.get(key) ?? 0,
+    dispose: () => unsubscribers.forEach((unsubscribe) => unsubscribe()),
   };
 }

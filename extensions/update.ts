@@ -50,7 +50,7 @@ export default function updateExtension(pi: ExtensionAPI): void {
       const bunBin = "bun";
 
       if (ctx.mode === "tui") {
-        registerTransientSegment(SEGMENT_KEY, {
+        registerTransientSegment(pi.events, SEGMENT_KEY, {
           text: "updating…",
           bg: "#414559",
           fg: "#838ba7",
@@ -139,7 +139,7 @@ fi
         { detached: true, stdio: "ignore" },
       );
       child.once("error", () => {
-        if (ctx.mode === "tui") registerTransientSegment(SEGMENT_KEY, null);
+        if (ctx.mode === "tui") registerTransientSegment(pi.events, SEGMENT_KEY, null);
         ctx.ui.notify("/update: failed to start background process", "error");
       });
       child.unref();
@@ -149,7 +149,7 @@ fi
         // Bail out if the background process takes unreasonably long
         if (Date.now() - startedAt > TIMEOUT_MS) {
           clearInterval(timer);
-          if (ctx.mode === "tui") registerTransientSegment(SEGMENT_KEY, null);
+          if (ctx.mode === "tui") registerTransientSegment(pi.events, SEGMENT_KEY, null);
           ctx.ui.notify(`/update timed out. See log: ${logPath}`, "warning");
           return;
         }
@@ -162,7 +162,7 @@ fi
         }
 
         clearInterval(timer);
-        if (ctx.mode === "tui") registerTransientSegment(SEGMENT_KEY, null);
+        if (ctx.mode === "tui") registerTransientSegment(pi.events, SEGMENT_KEY, null);
 
         if (result === "no_changes") {
           ctx.ui.notify("Nothing to update.", "info");
