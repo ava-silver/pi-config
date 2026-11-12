@@ -34,7 +34,6 @@
 - Prefer the Official CLI over an MCP server for connecting with platforms (`acli` for Jira/Confluence, `pup` for Datadog, `gh` for GitHub, etc).
   - `gh` and `gt` commands must be run from the repo you aim to interact with, since they use a shim to determine which github org to auth with.
 - When authentication is required or expired, start the interactive authentication flow and let me complete it instead of stopping.
-- Run commands needing AWS auth through `aws-sso-exec` (for example, `aws-sso-exec aws sts get-caller-identity`). It uses native AWS SSO and opens a browser for the user to auth only when required.
 - Use Colima instead of Docker.
 - Use the `grep` tool or `rg` instead of shell `grep`
 - Use `jq` for querying json files
