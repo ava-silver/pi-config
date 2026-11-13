@@ -19,7 +19,6 @@
 | `repository-context.ts` | Adds cached GitHub repository and GitHub Actions or GitLab CI metadata to the prompt.                                                                                                                                                                                                                                             |
 | `ui-performance.ts`     | Records event-loop stalls of at least one second to `~/.pi/agent/ui-blocking.jsonl`.                                                                                                                                                                                                                                              |
 
-| `read-aloud/` | Rewrites and reads the latest response aloud. |
 | `session-secret-redaction/` | Redacts detected secrets from Pi session files. |
 | `session-history/` | `session_search` and `session_read`: search past sessions (current repo and its worktrees, last 60 days by default) and read them as markdown transcripts. |
 | `shell.ts` | Runs shell commands with zsh aliases and escalating cancellation. |
