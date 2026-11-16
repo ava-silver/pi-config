@@ -1,6 +1,7 @@
 /**
- * Subagents -- spawn background pi subagents, each a headless in-process
- * agent session with its own context window.
+ * Subagents -- spawn background pi subagents, each with its own context
+ * window: a headless in-process agent session, or, when this pi runs in a
+ * herdr-core terminal, an interactive pi in its own terminal (src/backends/hc.ts).
  *
  * Tools (for the parent LLM):
  * - subagent_spawn: start work in the background and return an id immediately
@@ -35,6 +36,7 @@ import {
   type SubagentSnapshot,
 } from "./src/domain.ts";
 import { formatContextUtilization } from "../shared/context-utilization.ts";
+import { hcBackendAvailable } from "./src/backends/hc.ts";
 import { registerBackgroundCost, registerTransientSegment } from "../shared/footer-segments.ts";
 import { resolveStandaloneChildProjectTrust } from "../shared/child-session.ts";
 import { MAX_TRACKED, SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
@@ -426,7 +428,7 @@ function registerSpawnTool(pi: ExtensionAPI, controller: SubagentController) {
     pi.registerTool({
       name: "subagent_spawn",
       label: "Spawn Subagent",
-      description: buildSubagentSpawnToolDescription(modelExamples),
+      description: buildSubagentSpawnToolDescription(modelExamples, hcBackendAvailable()),
       promptSnippet: SUBAGENT_SPAWN_PROMPT_SNIPPET,
       promptGuidelines: SUBAGENT_SPAWN_PROMPT_GUIDELINES,
       parameters: Type.Object({

@@ -7,10 +7,11 @@
  */
 
 import { Cause, Exit, ManagedRuntime, type Effect } from "effect";
-import { SubagentManagerLive } from "./manager.ts";
+import { hcBackendAvailable } from "./backends/hc.ts";
+import { SubagentManagerHc, SubagentManagerLive } from "./manager.ts";
 
 export function createSubagentRuntime() {
-  return ManagedRuntime.make(SubagentManagerLive);
+  return ManagedRuntime.make(hcBackendAvailable() ? SubagentManagerHc : SubagentManagerLive);
 }
 
 export type SubagentRuntime = ReturnType<typeof createSubagentRuntime>;

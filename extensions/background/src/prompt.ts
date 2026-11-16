@@ -1,11 +1,17 @@
 /** All model-facing strings for the subagents tools. */
 
 /** Describes subagent_spawn, including models curated for the parent session. */
-export function buildSubagentSpawnToolDescription(modelExamples: readonly string[]) {
+export function buildSubagentSpawnToolDescription(modelExamples: readonly string[], inHerdr: boolean) {
   const scopedModels =
     modelExamples.length > 0 ? ` Scoped model examples: ${modelExamples.map((model) => `"${model}"`).join(", ")}.` : "";
+  const kind = inHerdr
+    ? "an interactive pi agent in its own Herdr terminal, which the user can watch and talk to directly, with its own context window"
+    : "a headless pi agent with its own context window";
+  const limits = inHerdr
+    ? "Children cannot orchestrate more agents and cannot see this conversation."
+    : "Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation.";
   return (
-    "Spawn a background subagent: a headless pi agent with its own context window. Spawning starts work in the background and returns an id immediately. You can message, inspect, wait for, or cancel the subagent. Its result is delivered automatically when it settles. Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation. Costly to start; prefer doing small or context-dependent work yourself. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once." +
+    `Spawn a background subagent: ${kind}. Spawning starts work in the background and returns an id immediately. You can message, inspect, wait for, or cancel the subagent. Its result is delivered automatically when it settles. ${limits} Costly to start; prefer doing small or context-dependent work yourself. Give the child enough context to start; it can ask you through ask_parent for clarification, decisions, or missing context that could improve the result. Max 16 subagents can run at once.` +
     scopedModels
   );
 }

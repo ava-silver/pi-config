@@ -26,6 +26,7 @@ import type {
   SubagentStatus,
   TranscriptItem,
 } from "./domain.ts";
+import { execHc, makeHcBackend } from "./backends/hc.ts";
 import { resumePiSession, spawnPiSession } from "./backends/pi.ts";
 import { ConcurrencyLimitError, SendError, SpawnError } from "./domain.ts";
 
@@ -379,6 +380,9 @@ function spawn(state: ManagerState, spawnFn: SpawnFn, task: SpawnTask) {
       state.reserved++;
       return Effect.void;
     });
+    // Allocate the id before the backend starts, which can take variable time,
+    // so concurrent spawns are numbered in call order.
+    const id = `sa-${++state.counter}`;
     const doSpawn = Effect.gen(function* () {
       const scope = yield* Scope.make();
       const session = yield* Scope.provide(spawnFn(task), scope).pipe(
@@ -390,7 +394,6 @@ function spawn(state: ManagerState, spawnFn: SpawnFn, task: SpawnTask) {
           message: "Subagent manager shut down while spawning.",
         });
       }
-      const id = `sa-${++state.counter}`;
       const meta = yield* session.meta;
       const entry: Entry = {
         snapshot: {
@@ -742,3 +745,6 @@ export function makeSubagentManagerLayer(
 }
 
 export const SubagentManagerLive = makeSubagentManagerLayer(spawnPiSession, resumePiSession);
+
+const hcBackend = makeHcBackend({ hc: execHc, piCommand: [process.execPath] });
+export const SubagentManagerHc = makeSubagentManagerLayer(hcBackend.spawn, hcBackend.resume);

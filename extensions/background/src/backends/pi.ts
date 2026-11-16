@@ -11,14 +11,15 @@
  *   the child session_shutdown hook and disposes the session.
  */
 
-import type { AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { createAgentSession, defineTool, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Cause, Scope } from "effect";
 import { Effect, Queue, Stream } from "effect";
-import { Type } from "typebox";
-import type { SpawnTask, SubagentEvent, SubagentMeta, SubagentSession, TranscriptPart } from "../domain.ts";
+import { createParentQuestions } from "../ask-parent.ts";
+import type { SpawnTask, SubagentEvent, SubagentMeta, SubagentSession } from "../domain.ts";
 import { SendError, SpawnError } from "../domain.ts";
+import { boundedError, type Emit, finalOutput, messageRole, replayTranscript, translateActivity } from "./pi-events.ts";
 import {
   bindChildSessionExtensions,
   childToolPolicy,
@@ -32,233 +33,25 @@ import { createToolCallTimeoutGuard } from "../../../shared/tool-call-timeout.ts
 
 type ThinkingLevel = NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["thinkingLevel"]>;
 
-// --- Event translation ----------------------------------------------------------
-
-function messageRole(msg: unknown): Message["role"] | undefined {
-  const role = (msg as { role?: string } | undefined)?.role;
-  if (role === "user" || role === "assistant" || role === "toolResult") return role;
-  return undefined;
-}
-
-function lastAssistantMessage(session: AgentSession): AssistantMessage | undefined {
-  const messages = session.messages;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (messageRole(msg) === "assistant") return msg as AssistantMessage;
-  }
-  return undefined;
-}
-
-/** Final assistant text output (last assistant message with text), v1 semantics. */
-function finalOutput(session: AgentSession): string {
-  const messages = session.messages;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (messageRole(msg) !== "assistant") continue;
-    const text = (msg as AssistantMessage).content
-      .filter((part) => part.type === "text")
-      .map((part) => part.text)
-      .join("\n")
-      .trim();
-    if (text) return text;
-  }
-  return "";
-}
-
-function safeJson(value: unknown): string | undefined {
-  try {
-    const text = JSON.stringify(value);
-    return text === "{}" ? undefined : text;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The argument key that best summarizes a call for known tool types. */
-const TOOL_SUMMARY_KEY = {
-  bash: "command",
-  read: "path",
-  write: "path",
-  edit: "path",
-  fetch_content: "url",
-  web_search: "query",
-  grep: "pattern",
-  find: "pattern",
-  source_check: "claim",
-  subagent_spawn: "name",
-  subagent_wait: "ids",
-  subagent_cancel: "ids",
-  subagent_list: null,
-  workflow: null,
-  ask_user: "question",
-  ask_parent: "question",
-} satisfies Record<string, string | null>;
-
-/**
- * Human-readable one-line preview of tool arguments. Extracts the most
- * meaningful argument for known tools; falls back to the first string value
- * found, then raw JSON.
- */
-function toolCallPreview(toolName: string, args: unknown): string | undefined {
-  if (!args || typeof args !== "object") return safeJson(args);
-  const obj = args as Record<string, unknown>;
-
-  const key = Object.hasOwn(TOOL_SUMMARY_KEY, toolName)
-    ? TOOL_SUMMARY_KEY[toolName as keyof typeof TOOL_SUMMARY_KEY]
-    : undefined;
-
-  if (key === null) return undefined; // known, no meaningful args to show
-
-  const target = key !== undefined ? obj[key] : undefined;
-  if (typeof target === "string") {
-    const first = target.split("\n")[0]?.trim() ?? "";
-    return first.slice(0, 300) || undefined;
-  }
-  if (Array.isArray(target)) {
-    const items = (target as unknown[]).filter((v): v is string => typeof v === "string");
-    return items.join(", ").slice(0, 300) || undefined;
-  }
-
-  // Unknown tool: use the first non-empty string value as a best-effort preview.
-  for (const val of Object.values(obj)) {
-    if (typeof val === "string" && val.trim()) {
-      return (val.split("\n")[0] ?? "").trim().slice(0, 300);
-    }
-  }
-
-  return safeJson(args);
-}
-
-/** First non-empty line of a tool result-ish value (v1 liveToolPreview). */
-function toolPreview(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return value
-      .split("\n")
-      .find((line) => line.trim())
-      ?.trim();
-  }
-  if (!value || typeof value !== "object") return undefined;
-  const content = (value as { content?: unknown }).content;
-  if (!Array.isArray(content)) return undefined;
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const record = part as { type?: unknown; text?: unknown };
-    if (record.type !== "text" || typeof record.text !== "string") continue;
-    const firstLine = record.text.split("\n").find((line) => line.trim());
-    if (firstLine) return firstLine.trim();
-  }
-  return undefined;
-}
-
-function assistantParts(msg: AssistantMessage): TranscriptPart[] {
-  const parts: TranscriptPart[] = [];
-  for (const part of msg.content) {
-    if (part.type === "text") {
-      parts.push({ type: "text", text: part.text });
-    } else if (part.type === "thinking") {
-      parts.push({
-        type: "thinking",
-        text: part.redacted ? "" : part.thinking,
-        ...(part.redacted === undefined ? {} : { redacted: part.redacted }),
-      });
-    } else if (part.type === "toolCall") {
-      const argsPreview = toolCallPreview(part.name, part.arguments);
-      parts.push({
-        type: "toolCall",
-        toolId: part.id,
-        name: part.name,
-        ...(argsPreview === undefined ? {} : { argsPreview }),
-      });
-    }
-  }
-  return parts;
-}
-
-function userText(msg: Message): string {
-  const content = (msg as { content: unknown }).content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter(
-      (part): part is { type: "text"; text: string } =>
-        !!part && typeof part === "object" && (part as { type?: unknown }).type === "text",
-    )
-    .map((part) => part.text)
-    .join("\n");
-}
-
 // --- The session ------------------------------------------------------------------
-
-function boundedError(error: unknown) {
-  return (error instanceof Error ? error.message : String(error)).slice(0, 4096);
-}
 
 interface PiSessionState {
   closed: boolean;
   runError: string | undefined;
   settled: boolean;
-  questionCounter: number;
 }
 
-type Emit = (event: SubagentEvent) => void;
-type PendingAnswer = {
-  resolve: (answer: string) => void;
-  reject: (error: Error) => void;
-  removeAbortListener: () => void;
-};
+type ParentQuestions = ReturnType<typeof createParentQuestions>;
 
-function createAskParentTool(state: PiSessionState, emit: Emit, pendingAnswers: Map<string, PendingAnswer>) {
-  return defineTool({
-    name: "ask_parent",
-    label: "Ask Parent",
-    description:
-      "Ask the parent agent for clarification, missing context, or a decision, then wait for its response. Use your judgment: resolve meaningful ambiguities rather than guessing.",
-    promptSnippet: "Ask the parent agent for clarification, missing context, or a decision, then wait for its answer",
-    promptGuidelines: [
-      "Ask the parent when clarification, missing context, or a decision could improve the result. Proceed independently for routine details, but prefer resolving meaningful ambiguities over guessing.",
-    ],
-    parameters: Type.Object({
-      question: Type.String({
-        description: "The specific question the parent agent should answer",
-      }),
-    }),
-    async execute(_toolCallId, params, signal) {
-      if (state.closed) throw new Error("The parent session is no longer available.");
-      const id = `q-${++state.questionCounter}`;
-      const answer = await new Promise<string>((resolve, reject) => {
-        const abort = () => {
-          if (!pendingAnswers.delete(id)) return;
-          emit({ _tag: "QuestionClosed", questionId: id });
-          reject(new Error("Parent question was cancelled."));
-        };
-        signal?.addEventListener("abort", abort, { once: true });
-        pendingAnswers.set(id, {
-          resolve,
-          reject,
-          removeAbortListener: () => signal?.removeEventListener("abort", abort),
-        });
-        if (signal?.aborted) {
-          abort();
-          return;
-        }
-        emit({
-          _tag: "QuestionAsked",
-          question: { id, text: params.question },
-        });
-      });
-      return {
-        content: [{ type: "text", text: `Parent response: ${answer}` }],
-        details: { question: params.question, answer },
-      };
-    },
-  });
+function lastAssistantMessage(session: AgentSession): AssistantMessage | undefined {
+  return session.messages.findLast((msg) => messageRole(msg) === "assistant") as AssistantMessage | undefined;
 }
 
 interface ChildSessionSetup {
   task: SpawnTask;
   model: Model<any> | undefined;
   thinkingLevel: ThinkingLevel | undefined;
-  askParentTool: ReturnType<typeof defineTool>;
+  askParentTool: ParentQuestions["tool"];
   sessionFilePath?: string;
 }
 
@@ -340,7 +133,7 @@ function createSessionControl(setup: SessionControlSetup): SessionControl {
     if (state.settled) return;
     state.settled = true;
     const last = lastAssistantMessage(session);
-    const partialText = finalOutput(session) || undefined;
+    const partialText = finalOutput(session.messages) || undefined;
     if (last?.stopReason === "aborted") {
       emit({
         _tag: "RunSettled",
@@ -366,7 +159,7 @@ function createSessionControl(setup: SessionControlSetup): SessionControl {
     }
     emit({
       _tag: "RunSettled",
-      outcome: { _tag: "Completed", finalText: finalOutput(session) },
+      outcome: { _tag: "Completed", finalText: finalOutput(session.messages) },
     });
   };
   const handleEvent = (event: AgentSessionEvent) => {
@@ -377,67 +170,19 @@ function createSessionControl(setup: SessionControlSetup): SessionControl {
         state.settled = false;
         emit({ _tag: "RunStarted" });
         break;
-      case "message_update": {
-        const streamEvent = event.assistantMessageEvent;
-        if (streamEvent.type === "text_delta")
-          emit({
-            _tag: "AssistantDelta",
-            kind: "text",
-            delta: streamEvent.delta,
-          });
-        else if (streamEvent.type === "thinking_delta")
-          emit({
-            _tag: "AssistantDelta",
-            kind: "thinking",
-            delta: streamEvent.delta,
-          });
+      case "message_update":
+      case "tool_execution_start":
+      case "tool_execution_update":
+      case "tool_execution_end":
+        translateActivity(event, emit);
         break;
-      }
-      case "message_end": {
-        const role = messageRole(event.message);
-        if (role === "user") {
-          const text = userText(event.message as Message);
-          if (text.trim()) emit({ _tag: "UserMessage", text });
-        } else if (role === "assistant") {
-          emit({
-            _tag: "AssistantMessage",
-            parts: assistantParts(event.message as AssistantMessage),
-          });
+      case "message_end":
+        translateActivity(event, emit);
+        if (messageRole(event.message) === "assistant") {
           emitUsage();
           emit({ _tag: "MetaChanged", meta: currentMeta() });
         }
         break;
-      }
-      case "tool_execution_start": {
-        const argsPreview = toolCallPreview(event.toolName, event.args);
-        emit({
-          _tag: "ToolStart",
-          toolId: event.toolCallId,
-          name: event.toolName,
-          ...(argsPreview === undefined ? {} : { argsPreview }),
-        });
-        break;
-      }
-      case "tool_execution_update": {
-        const outputPreview = toolPreview(event.partialResult);
-        emit({
-          _tag: "ToolUpdate",
-          toolId: event.toolCallId,
-          ...(outputPreview === undefined ? {} : { outputPreview }),
-        });
-        break;
-      }
-      case "tool_execution_end": {
-        const outputPreview = toolPreview(event.result);
-        emit({
-          _tag: "ToolEnd",
-          toolId: event.toolCallId,
-          name: event.toolName,
-          isError: event.isError,
-          ...(outputPreview === undefined ? {} : { outputPreview }),
-        });
-        break;
-      }
       case "queue_update":
         emit({
           _tag: "QueueChanged",
@@ -473,7 +218,7 @@ function createSessionControl(setup: SessionControlSetup): SessionControl {
 interface FinalizerSetup {
   session: AgentSession;
   state: PiSessionState;
-  pendingAnswers: Map<string, PendingAnswer>;
+  questions: ParentQuestions;
   unsubscribe: () => void;
   events: Queue.Queue<SubagentEvent, Cause.Done>;
 }
@@ -481,11 +226,7 @@ interface FinalizerSetup {
 function closePiSession(setup: FinalizerSetup) {
   return Effect.promise(async () => {
     setup.state.closed = true;
-    for (const pending of setup.pendingAnswers.values()) {
-      pending.removeAbortListener();
-      pending.reject(new Error("Subagent session closed before the parent answered."));
-    }
-    setup.pendingAnswers.clear();
+    setup.questions.close();
     setup.unsubscribe();
     try {
       setup.session.clearQueue();
@@ -511,22 +252,6 @@ function interruptPiSession(session: AgentSession, state: PiSessionState, emit: 
   });
 }
 
-function replayTranscript(session: AgentSession, emit: Emit) {
-  for (const message of session.messages) {
-    const role = messageRole(message);
-    if (role === "user") {
-      const text = userText(message as Message);
-      if (text.trim()) emit({ _tag: "UserMessage", text });
-    } else if (role === "assistant") {
-      emit({
-        _tag: "AssistantMessage",
-        parts: assistantParts(message as AssistantMessage),
-      });
-    }
-  }
-  emit({ _tag: "OutputRestored", finalText: finalOutput(session) });
-}
-
 const makePiSession = (
   task: SpawnTask,
   sessionFilePath?: string,
@@ -546,19 +271,17 @@ const makePiSession = (
       closed: false,
       runError: undefined,
       settled: false,
-      questionCounter: 0,
     };
     const events = yield* Queue.make<SubagentEvent, Cause.Done>();
     const emit: Emit = (event) => {
       if (!state.closed) Queue.offerUnsafe(events, event);
     };
-    const pendingAnswers = new Map<string, PendingAnswer>();
-    const askParentTool = createAskParentTool(state, emit, pendingAnswers);
+    const questions = createParentQuestions(emit);
     const session = yield* createChildSession({
       task,
       model,
       thinkingLevel,
-      askParentTool,
+      askParentTool: questions.tool,
       ...(sessionFilePath === undefined ? {} : { sessionFilePath }),
     });
     const toolTimeout = createToolCallTimeoutGuard();
@@ -571,11 +294,11 @@ const makePiSession = (
       toolTimeout,
     });
     const unsubscribe = session.subscribe((event) => control.handleEvent(event));
-    yield* Effect.addFinalizer(() => closePiSession({ session, state, pendingAnswers, unsubscribe, events }));
+    yield* Effect.addFinalizer(() => closePiSession({ session, state, questions, unsubscribe, events }));
     yield* Effect.try(() => session.sessionManager.appendSessionInfo(`subagent: ${task.title}`)).pipe(Effect.ignore);
     emit({ _tag: "MetaChanged", meta: control.currentMeta() });
     if (sessionFilePath) {
-      replayTranscript(session, emit);
+      replayTranscript(session.messages, emit);
       control.emitUsage();
     } else control.startRun(task.prompt);
     return {
@@ -593,18 +316,11 @@ const makePiSession = (
           return Effect.void;
         }),
       answer: (questionId, text) =>
-        Effect.suspend((): Effect.Effect<void, SendError> => {
-          const pending = pendingAnswers.get(questionId);
-          if (!pending || state.closed)
-            return new SendError({
-              message: `Question "${questionId}" is no longer pending.`,
-            });
-          pendingAnswers.delete(questionId);
-          pending.removeAbortListener();
-          emit({ _tag: "QuestionClosed", questionId });
-          pending.resolve(text);
-          return Effect.void;
-        }),
+        Effect.suspend((): Effect.Effect<void, SendError> =>
+          questions.answer(questionId, text)
+            ? Effect.void
+            : new SendError({ message: `Question "${questionId}" is no longer pending.` }),
+        ),
       interrupt: interruptPiSession(session, state, emit),
     } satisfies SubagentSession;
   });

@@ -1,12 +1,15 @@
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Editor, matchesKey, type EditorComponent } from "@earendil-works/pi-tui";
 import { BackgroundHub } from "./src/hub.ts";
+import { setupSubagentChild, subagentChannel } from "./src/child.ts";
 import { setupSubagents } from "./subagents.ts";
 import { setupShells } from "./shells.ts";
 
 export default function (pi: ExtensionAPI) {
   const background = new BackgroundHub();
-  setupSubagents(pi, background);
+  const channel = subagentChannel();
+  if (channel) setupSubagentChild(pi, channel);
+  else setupSubagents(pi, background);
   setupShells(pi, background);
 
   pi.registerCommand("background", {
