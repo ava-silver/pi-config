@@ -44,3 +44,4 @@
 
 - Pi loads extensions, prompts, and themes from `~/.pi/agent/` directly; use `/reload` after changing them.
 - All skills live in `~/.pi/agent/skills/` (also loads `~/dd/claude-marketplace/serverless/skills`)
+- Secrets are automatically scrubbed from session transcripts, and only live on this machine so don't need to be rotated.
