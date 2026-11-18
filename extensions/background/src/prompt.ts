@@ -32,7 +32,7 @@ export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
 export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
   prompt:
     "Task prompt for the subagent. Include enough context, file paths, and expected output to start; it can ask_parent for clarification or missing context.",
-  name: "Short human-readable name for this subagent, shown in listings and the UI",
+  name: 'Descriptive 2-5 word name in sentence case that says what the subagent does, like "Fix env var types" or "Review auth middleware". Avoid bare ticket numbers and abbreviations. Shown in listings and the terminal UI.',
   workingDir: "Working directory (default: current working directory)",
   model:
     '"provider/model-id" or bare model id. Omit to inherit the current model; pick another only when the task clearly needs it (for example, a stronger model for hard reasoning).',

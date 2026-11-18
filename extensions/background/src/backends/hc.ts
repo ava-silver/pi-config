@@ -44,23 +44,26 @@ export const execHc: HcRunner = (args) =>
     execFile("hc", [...args], { timeout: HC_TIMEOUT_MS }, (error, stdout, stderr) => {
       if (!error) return resolve(stdout);
       let message = stderr.trim() || error.message;
+      let kind: string | undefined;
       try {
-        message = (JSON.parse(message) as { error?: { message?: string } }).error?.message ?? message;
+        const parsed = (JSON.parse(message) as { error?: { message?: string; kind?: string } }).error;
+        message = parsed?.message ?? message;
+        kind = parsed?.kind;
       } catch {}
-      reject(new Error(`hc ${args[0]}: ${message}`));
+      reject(Object.assign(new Error(`hc ${args[0]}: ${message}`), { kind }));
     });
   });
 
-/** hc names: 1-32 of a-z 0-9 - _, unique among live terminals. */
-function terminalName(title: string) {
-  const slug =
+/** hc names: 1-32 of a-z 0-9 - _, unique among live terminals. A suffix is added only after a collision. */
+function terminalName(title: string, unique: boolean) {
+  const slug = (max: number) =>
     title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 24)
+      .slice(0, max)
       .replace(/-+$/, "") || "subagent";
-  return `${slug}-${randomBytes(2).toString("hex")}`;
+  return unique ? `${slug(27)}-${randomBytes(2).toString("hex")}` : slug(32);
 }
 
 function parseAddress(stdout: string) {
@@ -164,32 +167,37 @@ const makeHcSession = (
           ? ["--session", state.sessionFile]
           : [
               "--name",
-              `subagent: ${task.title}`,
+              task.title,
               ...(model ? ["--model", `${model.provider}/${model.id}`] : []),
               ...(thinking ? ["--thinking", thinking] : []),
             ]),
         task.parent.projectTrusted ? "--approve" : "--no-approve",
       ];
+      const run = (unique: boolean) =>
+        hc([
+          "run",
+          "--bg",
+          "--json",
+          // Exits are detected over the channel; hc notes would be typed into the
+          // parent's prompt, or into its shell once the parent pi has exited.
+          "--no-notify",
+          "--name",
+          terminalName(task.title, unique),
+          "--cwd",
+          task.cwd,
+          "--",
+          "env",
+          `${CHANNEL_ENV}=${dir}`,
+          ...options.piCommand,
+          ...piArgs,
+        ]);
       state.active = true;
       try {
         state.address = parseAddress(
-          await hc([
-            "run",
-            "--bg",
-            "--json",
-            // Exits are detected over the channel; hc notes would be typed into the
-            // parent's prompt, or into its shell once the parent pi has exited.
-            "--no-notify",
-            "--name",
-            terminalName(task.title),
-            "--cwd",
-            task.cwd,
-            "--",
-            "env",
-            `${CHANNEL_ENV}=${dir}`,
-            ...options.piCommand,
-            ...piArgs,
-          ]),
+          await run(false).catch((error: { kind?: string }) => {
+            if (error.kind === "name_taken") return run(true);
+            throw error;
+          }),
         );
       } catch (error) {
         state.active = false;
