@@ -18,7 +18,12 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionUIContext,
+  MessageRenderer,
+} from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -26,7 +31,7 @@ import {
   getMarkdownTheme,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { Markdown, Text } from "@earendil-works/pi-tui";
+import { Box, Markdown, MouseRegion, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   formatElapsed,
@@ -35,6 +40,7 @@ import {
   type PersistedSubagent,
   type SubagentSnapshot,
 } from "./src/domain.ts";
+import { COMPACT_ROW } from "../shared/compact-row.ts";
 import { formatContextUtilization } from "../shared/context-utilization.ts";
 import { hcBackendAvailable } from "./src/backends/hc.ts";
 import { processIsRunning } from "./src/channel.ts";
@@ -707,51 +713,75 @@ function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentContr
   });
 }
 
+type SubagentMessageDetails = {
+  id?: string;
+  title?: string;
+  status?: string;
+};
+
+const PREVIEW_RENDER_WIDTH = 1000;
+
 function registerSubagentMessageRenderers(pi: ExtensionAPI) {
-  pi.registerMessageRenderer("subagent-question", (message, _options, theme) => {
-    const details = (message.details ?? {}) as {
-      id?: string;
-      title?: string;
+  // Click toggles, keyed by message and dropped when Ctrl+O changes the global state, like tool rows.
+  const toggles = new WeakMap<object, { globalExpanded: boolean; expanded: boolean }>();
+
+  const renderer =
+    (kind: "question" | "result"): MessageRenderer =>
+    (message, options, theme) => {
+      const details = (message.details ?? {}) as SubagentMessageDetails;
+      const failed = details.status === "error";
+      const [icon, status] =
+        kind === "question"
+          ? [theme.fg("warning", "?"), "needs an answer"]
+          : failed
+            ? [theme.fg("error", "✗"), "failed"]
+            : [theme.fg("success", "■"), "finished"];
+      const header =
+        `${icon} ` +
+        theme.fg("accent", theme.bold(`subagent ${details.id ?? "?"}`)) +
+        theme.fg("muted", ` · ${details.title ?? ""} · ${status}`);
+      const body = (typeof message.content === "string" ? message.content : "").split("\n").slice(1).join("\n").trim();
+      const markdown = new Markdown(body, 0, 0, getMarkdownTheme());
+      const background = (text: string) =>
+        theme.bg(kind === "question" ? "toolPendingBg" : failed ? "toolErrorBg" : "toolSuccessBg", text);
+
+      const toggle = toggles.get(message);
+      if (toggle && toggle.globalExpanded !== options.expanded) toggles.delete(message);
+      const isExpanded = () => toggles.get(message)?.expanded ?? options.expanded;
+
+      const collapsed = new Box(options.outputPad, 0, background);
+      collapsed.addChild({
+        render: (width) => {
+          const preview = markdown
+            .render(PREVIEW_RENDER_WIDTH)
+            .map((line) => line.trim())
+            .find((line) => line.length > 0);
+          return [truncateToWidth(preview ? `${header}${theme.fg("muted", " · ")}${preview}` : header, width)];
+        },
+        invalidate: () => markdown.invalidate(),
+      });
+      const expanded = new Box(options.outputPad, 1, background);
+      expanded.addChild(new Text(header, 0, 0));
+      expanded.addChild(new Spacer(1));
+      expanded.addChild(markdown);
+
+      const view = {
+        render: (width: number) => (isExpanded() ? expanded : collapsed).render(width),
+        invalidate: () => {
+          collapsed.invalidate();
+          expanded.invalidate();
+        },
+      };
+      const region = new MouseRegion(view, (event) => {
+        if (event.type !== "click" || event.button !== "left") return undefined;
+        toggles.set(message, { globalExpanded: options.expanded, expanded: !isExpanded() });
+        return { handled: true };
+      });
+      return Object.assign(region, { [COMPACT_ROW]: () => !isExpanded() });
     };
-    const header =
-      theme.fg("warning", "?") +
-      " " +
-      theme.fg("accent", theme.bold(`subagent ${details.id ?? "?"}`)) +
-      theme.fg("muted", ` · ${details.title ?? ""} · needs an answer`);
-    const body = (typeof message.content === "string" ? message.content : "").split("\n").slice(1).join("\n").trim();
-    const container = new Text(header, 0, 0);
-    const md = new Markdown(body, 0, 0, getMarkdownTheme());
-    return {
-      render: (width: number) => [...container.render(width), ...md.render(width)],
-      invalidate: () => {
-        container.invalidate();
-        md.invalidate();
-      },
-    };
-  });
-  pi.registerMessageRenderer("subagent-result", (message, _options, theme) => {
-    const details = (message.details ?? {}) as {
-      id?: string;
-      title?: string;
-      status?: string;
-    };
-    const failed = details.status === "error";
-    const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "■");
-    const header =
-      `${icon} ` +
-      theme.fg("accent", theme.bold(`subagent ${details.id ?? "?"}`)) +
-      theme.fg("muted", ` · ${details.title ?? ""} · ${failed ? "failed" : "finished"}`);
-    const body = (typeof message.content === "string" ? message.content : "").split("\n").slice(1).join("\n").trim();
-    const container = new Text(header, 0, 0);
-    const md = new Markdown(body, 0, 0, getMarkdownTheme());
-    return {
-      render: (width: number) => [...container.render(width), ...md.render(width)],
-      invalidate: () => {
-        container.invalidate();
-        md.invalidate();
-      },
-    };
-  });
+
+  pi.registerMessageRenderer("subagent-question", renderer("question"));
+  pi.registerMessageRenderer("subagent-result", renderer("result"));
 }
 
 export function setupSubagents(pi: ExtensionAPI, background: BackgroundHub) {

@@ -1,5 +1,12 @@
-import { type ExtensionAPI, ToolExecutionComponent, type ToolRenderers } from "@earendil-works/pi-coding-agent";
+import {
+  CustomMessageComponent,
+  type ExtensionAPI,
+  ToolExecutionComponent,
+  type ToolRenderers,
+} from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Container, Text } from "@earendil-works/pi-tui";
+
+import { COMPACT_ROW, type CompactRowMarker } from "./shared/compact-row.ts";
 
 const COMPACT_CALL_LINES = 3;
 const STATE_KEY = "outputCompaction";
@@ -41,9 +48,9 @@ const isCompact = (context: RenderContext) => !context.expanded && !context.isPa
 const textOutput = (result: Parameters<ResultRenderer>[0]) =>
   result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 
-// Pi puts a blank line above every tool row, and no public API removes it. These patches drop it
-// between adjacent compact rows. They read the private `rendererState`, which is the `context.state`
-// object passed to the renderers above.
+// Pi puts a blank line above every tool row and custom message, and no public API removes it. These
+// patches drop it between adjacent compact rows. They read the private `rendererState`, which is the
+// `context.state` object passed to the renderers above.
 type RowInternals = {
   rendererState?: Record<string, RowState | undefined>;
   joinsPrevious?: boolean;
@@ -51,36 +58,53 @@ type RowInternals = {
 
 const internals = (row: unknown) => row as RowInternals;
 
+const isRow = (component: Component) =>
+  component instanceof ToolExecutionComponent || component instanceof CustomMessageComponent;
+
 const isCompactRow = (component: Component | undefined) =>
-  component instanceof ToolExecutionComponent && internals(component).rendererState?.[STATE_KEY]?.compact === true;
+  (component instanceof ToolExecutionComponent && internals(component).rendererState?.[STATE_KEY]?.compact === true) ||
+  (component instanceof CustomMessageComponent &&
+    component.children.some((child) => (child as CompactRowMarker)[COMPACT_ROW]?.() === true));
 
 function patchRowSpacing(): () => void {
   const container = Container.prototype;
-  const row = ToolExecutionComponent.prototype;
-  const original = { render: container.render, rowRender: row.render, rowMouse: row.handleMouse };
+  const originalRender = container.render;
+  const unpatchRows = [ToolExecutionComponent.prototype, CustomMessageComponent.prototype].map(patchRow);
 
   container.render = function (this: Container, width: number) {
     this.children.forEach((child, index) => {
-      if (!(child instanceof ToolExecutionComponent)) return;
+      if (!isRow(child)) return;
       internals(child).joinsPrevious =
         isCompactRow(child) &&
         isCompactRow(this.children.slice(0, index).findLast((previous) => previous.render(width).length > 0));
     });
-    return original.render.call(this, width);
-  };
-  row.render = function (this: ToolExecutionComponent, width: number) {
-    const rendered = original.rowRender.call(this, width);
-    return internals(this).joinsPrevious && rendered[0] === "" ? rendered.slice(1) : rendered;
-  };
-  row.handleMouse = function (this: ToolExecutionComponent, event) {
-    const shifted = internals(this).joinsPrevious ? { ...event, y: event.y + 1, height: event.height + 1 } : event;
-    return original.rowMouse.call(this, shifted);
+    return originalRender.call(this, width);
   };
 
   return () => {
-    container.render = original.render;
-    row.render = original.rowRender;
-    row.handleMouse = original.rowMouse;
+    container.render = originalRender;
+    unpatchRows.forEach((unpatch) => unpatch());
+  };
+}
+
+function patchRow(row: Container): () => void {
+  const own = { render: Object.hasOwn(row, "render"), handleMouse: Object.hasOwn(row, "handleMouse") };
+  const original = { render: row.render, handleMouse: row.handleMouse };
+
+  row.render = function (this: Container, width: number) {
+    const rendered = original.render.call(this, width);
+    return internals(this).joinsPrevious && rendered[0] === "" ? rendered.slice(1) : rendered;
+  };
+  row.handleMouse = function (this: Container, event) {
+    const shifted = internals(this).joinsPrevious ? { ...event, y: event.y + 1, height: event.height + 1 } : event;
+    return original.handleMouse.call(this, shifted);
+  };
+
+  return () => {
+    if (own.render) row.render = original.render;
+    else delete (row as Partial<Container>).render;
+    if (own.handleMouse) row.handleMouse = original.handleMouse;
+    else delete (row as Partial<Container>).handleMouse;
   };
 }
 
