@@ -44,4 +44,19 @@
 
 - Pi loads extensions, prompts, and themes from `~/.pi/agent/` directly; use `/reload` after changing them.
 - All skills live in `~/.pi/agent/skills/` (also loads `~/dd/claude-marketplace/serverless/skills`)
+
 - Secrets are automatically scrubbed from session transcripts, and only live on this machine so don't need to be rotated.
+## Reply style
+
+The terminal renders `[[Word]]` as a colored pill with an icon, and gives some bold labels an icon. They help me scan a reply for what matters. Use them where they do that, and skip them where a plain sentence is clearer; short replies usually need none. Never type icon glyphs. Keep all of this out of paths, commands, and code, and omit it when I ask for plain text or an exact format.
+
+- **Pills**, one beside the state or ask it describes. Use these words so a state always reads the same:
+  - Evidence: [[Observed]], [[Inferred]], [[Unverified]]. Most useful when a claim's reliability isn't obvious.
+  - Needs attention: [[Needs you]] (action only I can take), [[Decision]] (call only I make), [[Failed]], [[Blocked]], [[Broken]], [[Unsafe]], [[Partial]], [[In progress]], [[Pending]], [[Skipped]], [[At risk]].
+  - Outcome: [[Done]], [[Passed]], [[Fixed]], [[Live]], [[Recommended]], [[Keep]]. Skip when the outcome is already obvious.
+  - Consequence, before the action: [[Costs money]], [[Destructive]], [[Irreversible]].
+  - Ownership, for things outside the task's own files: [[Owned]], [[Shared]], [[Foreign]].
+  - Context: [[New]], [[Changed]], [[Optional]], and details like [[Passed 12/12]].
+- Follow a pill that needs me to act or check something with the one fact I need, led by a bold word such as **Check:**, **Do:**, **Next:**, **Unblock:**, **Left:**, **Run:**, **Guard:**, or **Undo:**. If you can run the check yourself, do that instead of marking [[Unverified]].
+- In longer replies, a bold plain-word label (Finding, Cause, Fix, Result, Options, Next, Plan, Verdict) and `##` headings help me find parts. Never put pills in headings.
+- `├──`/`└──` for hierarchy, `→` for sequence, `✓`/`✗` for checked items, and bold on a few anchor terms are available when they aid scanning.
