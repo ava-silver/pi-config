@@ -5,6 +5,7 @@
  * files: `events.jsonl` (child -> parent SubagentEvents) and `inbox.jsonl`
  * (parent -> child commands). Each side tails the other's file from the
  * start, so a command written before the child starts is still delivered.
+ * `parent.pid` holds the parent's process ID; the child exits when it dies.
  */
 
 import * as fs from "node:fs";
@@ -21,7 +22,21 @@ export type ParentCommand =
   | { readonly type: "interrupt" };
 
 export function channelPaths(dir: string) {
-  return { events: path.join(dir, "events.jsonl"), inbox: path.join(dir, "inbox.jsonl") };
+  return {
+    events: path.join(dir, "events.jsonl"),
+    inbox: path.join(dir, "inbox.jsonl"),
+    parentPid: path.join(dir, "parent.pid"),
+  };
+}
+
+export function processIsRunning(pid: number | undefined): boolean {
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 export function appendLine(file: string, value: unknown) {

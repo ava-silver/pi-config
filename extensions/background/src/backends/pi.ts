@@ -262,11 +262,14 @@ const makePiSession = (
       return yield* new SpawnError({
         message: "pi backend requires the parent session's model registry.",
       });
+    // A resumed session keeps the model and thinking level its file records.
     const model = yield* Effect.try({
-      try: () => resolveChildModel(registry, task.model, task.parent.inheritedModel),
+      try: () => (sessionFilePath ? undefined : resolveChildModel(registry, task.model, task.parent.inheritedModel)),
       catch: (error) => new SpawnError({ message: boundedError(error) }),
     });
-    const thinkingLevel = (task.reasoningEffort ?? task.parent.inheritedThinkingLevel) as ThinkingLevel | undefined;
+    const thinkingLevel = sessionFilePath
+      ? undefined
+      : ((task.reasoningEffort ?? task.parent.inheritedThinkingLevel) as ThinkingLevel | undefined);
     const state: PiSessionState = {
       closed: false,
       runError: undefined,

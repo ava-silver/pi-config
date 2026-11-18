@@ -158,6 +158,7 @@ const makeHcSession = (
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
       state.dir = dir;
       const paths = channelPaths(dir);
+      fs.writeFileSync(paths.parentPid, String(process.pid), { mode: 0o600 });
       appendLine(paths.inbox, { type: "send", text } satisfies ParentCommand);
       state.stopTail = tailJsonl(paths.events, (value) => {
         if (isSubagentEvent(value)) emit(value);

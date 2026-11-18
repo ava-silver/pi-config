@@ -4,6 +4,7 @@
  */
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -15,16 +16,19 @@ import type { SubagentEvent } from "./src/domain.ts";
 
 type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown;
 
-function fakeChild() {
+function fakeChild(parentPid = process.pid) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "child-test-"));
+  fs.writeFileSync(channelPaths(dir).parentPid, String(parentPid));
   const handlers = new Map<string, Handler[]>();
   const sent: string[] = [];
+  const calls: string[] = [];
   const ctx = {
     model: undefined,
     sessionManager: { getSessionFile: () => "/tmp/s.jsonl", getBranch: () => [], getEntries: () => [] },
     getContextUsage: () => undefined,
     isIdle: () => true,
-    abort: () => {},
+    abort: () => calls.push("abort"),
+    shutdown: () => calls.push("shutdown"),
   } as unknown as ExtensionContext;
   const fire = (type: string, event: Record<string, unknown> = {}) =>
     (handlers.get(type) ?? []).forEach((handler) => handler({ type, ...event }, ctx));
@@ -59,6 +63,7 @@ function fakeChild() {
   };
   return {
     sent,
+    calls,
     events,
     fire,
     turn,
@@ -95,6 +100,16 @@ test("parent messages reach the model labeled, and their turns are reported", as
       { _tag: "RunStarted" },
       { _tag: "RunSettled", outcome: { _tag: "Completed", finalText: "fixed" } },
     ]);
+  } finally {
+    child.dispose();
+  }
+});
+
+test("the child stops its run and exits when the parent process is gone", async () => {
+  const child = fakeChild(spawnSync("true").pid);
+  try {
+    for (let i = 0; i < 40 && child.calls.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(child.calls, ["abort", "shutdown"]);
   } finally {
     child.dispose();
   }

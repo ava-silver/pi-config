@@ -10,17 +10,27 @@
  * the parent; their transcript still reaches it.
  */
 
+import * as fs from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sessionCost } from "../../shared/session-cost.ts";
 import { createParentQuestions } from "./ask-parent.ts";
 import { assistantText, type Emit, finalOutput, messageRole, translateActivity } from "./backends/pi-events.ts";
-import { appendLine, CHANNEL_ENV, channelPaths, isParentCommand, type ParentCommand, tailJsonl } from "./channel.ts";
+import {
+  appendLine,
+  CHANNEL_ENV,
+  channelPaths,
+  isParentCommand,
+  type ParentCommand,
+  processIsRunning,
+  tailJsonl,
+} from "./channel.ts";
 import type { SubagentMeta } from "./domain.ts";
 
 const CHANNEL_KEY: unique symbol = Symbol.for("pi.background-subagents.channel");
 const PARENT_OPEN = "<parent_agent>\n";
 const PARENT_CLOSE = "\n</parent_agent>";
+const PARENT_CHECK_MS = 2_000;
 const CHILD_GUIDELINES = [
   "Messages wrapped in <parent_agent> tags come from the parent agent that delegated your task; your reply to them is delivered to it when your turn ends. Other user messages come directly from the user in your terminal, and your replies to those do not reach the parent.",
 ];
@@ -57,6 +67,7 @@ export function setupSubagentChild(pi: ExtensionAPI, dir: string) {
 
   let ctx: ExtensionContext | undefined;
   let stopInbox: (() => void) | undefined;
+  let parentWatch: ReturnType<typeof setInterval> | undefined;
   /** The current or next run took a parent message, so the parent hears of it. */
   let reported = false;
   let lastAssistant: AssistantMessage | undefined;
@@ -102,6 +113,14 @@ export function setupSubagentChild(pi: ExtensionAPI, dir: string) {
         if (isParentCommand(value)) handle(value);
       });
     }, 0);
+    // The parent stops its children when it exits; this covers a parent that dies without cleanup.
+    const parentPid = Number(fs.readFileSync(paths.parentPid, "utf8"));
+    parentWatch ??= setInterval(() => {
+      if (processIsRunning(parentPid)) return;
+      clearInterval(parentWatch);
+      context.abort();
+      context.shutdown();
+    }, PARENT_CHECK_MS);
   });
   pi.on("input", (event) => {
     if (reported || !event.text.startsWith(PARENT_OPEN)) return;
@@ -139,6 +158,8 @@ export function setupSubagentChild(pi: ExtensionAPI, dir: string) {
   pi.on("session_shutdown", (event) => {
     stopInbox?.();
     stopInbox = undefined;
+    clearInterval(parentWatch);
+    parentWatch = undefined;
     questions.close();
     if (reported && event.reason === "quit")
       emit({ _tag: "RunSettled", outcome: { _tag: "Failed", errorText: "The subagent's pi exited." } });

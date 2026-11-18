@@ -37,6 +37,7 @@ import {
 } from "./src/domain.ts";
 import { formatContextUtilization } from "../shared/context-utilization.ts";
 import { hcBackendAvailable } from "./src/backends/hc.ts";
+import { processIsRunning } from "./src/channel.ts";
 import { registerBackgroundCost, registerTransientSegment } from "../shared/footer-segments.ts";
 import { resolveStandaloneChildProjectTrust } from "../shared/child-session.ts";
 import { MAX_TRACKED, SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
@@ -85,16 +86,6 @@ interface SavedSession {
 function savedSessionRegistry() {
   const globals = globalThis as typeof globalThis & { [SAVED_SESSIONS_KEY]?: Map<string, SavedSession> };
   return (globals[SAVED_SESSIONS_KEY] ??= new Map());
-}
-
-function processIsRunning(pid: number | undefined): boolean {
-  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 export function hasLiveSubagentOwner(records: Iterable<PersistedSubagent>): boolean {
