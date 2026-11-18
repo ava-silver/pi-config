@@ -44,8 +44,8 @@
 
 - Pi loads extensions, prompts, and themes from `~/.pi/agent/` directly; use `/reload` after changing them.
 - All skills live in `~/.pi/agent/skills/` (also loads `~/dd/claude-marketplace/serverless/skills`)
-
 - Secrets are automatically scrubbed from session transcripts, and only live on this machine so don't need to be rotated.
+
 ## Reply style
 
 The terminal renders `[[Word]]` as a colored pill with an icon, and gives some bold labels an icon. They help me scan a reply for what matters. Use them where they do that, and skip them where a plain sentence is clearer; short replies usually need none. Never type icon glyphs. Keep all of this out of paths, commands, and code, and omit it when I ask for plain text or an exact format.
