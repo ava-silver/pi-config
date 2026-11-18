@@ -22,6 +22,14 @@ Input: $ARGUMENTS
 9. Use the repository's normal merge or queue mechanism. For a direct merge, pin the reviewed head with `--match-head-commit` and use an allowed merge method. Respect an existing queue entry. Never bypass checks, use an admin override, change protection settings, or rewrite a bot's or coworker's branch. Do not publish releases or manually deploy.
 10. For Docs, merge only after actual Docs approval and required checks pass. Native auto-merge is acceptable only if repository policy enforces that approval. Otherwise poll with time-bounded commands. If the session ends before approval arrives, state the remaining condition and whether a watcher is still running; do not imply indefinite monitoring.
 
+## Web UI
+
+For `ddoghq/web-ui`, use its merge queue rather than `gh pr merge`:
+
+- Confirm the PR targets `preprod`. If its branch is behind, refresh it with `gh pr update-branch <number> --repo ddoghq/web-ui`, the CLI equivalent of GitHub's **Update branch**. Use the default merge commit, not `--rebase` or a force push. Check whether refreshing the branch resolves stale or canceled CI before assigning an external-team blocker.
+- After a refresh, record the new head and recheck the generated diff, approvals, and current CI. Do not rely on checks from the old head.
+- Submit to the queue with `gh pr comment <number> --repo ddoghq/web-ui --body '/merge'`; the custom merge UI is also valid. Let the queue enforce merge requirements. Respect an existing queue entry, do not guess queue labels, and distinguish queued from merged in your report.
+
 ## Report
 
 Verify merged state through GitHub after each merge. Report concise, linked groups: merged, queued, waiting for Docs, and left to external teams or blocked. Include the source pipeline/Atlas link and any concrete failure requiring follow-up. Do not post Slack messages, request extra reviewers, or add PR comments unless needed by the documented CI/merge mechanism or requested by the user.
