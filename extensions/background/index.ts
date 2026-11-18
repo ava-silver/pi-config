@@ -39,7 +39,8 @@ export default function (pi: ExtensionAPI) {
 
     const previous = ctx.ui.getEditorComponent();
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-      const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
+      const editor =
+        previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true });
       if (editor instanceof Editor) {
         const handleInput = editor.handleInput.bind(editor);
         editor.handleInput = (data: string) => {

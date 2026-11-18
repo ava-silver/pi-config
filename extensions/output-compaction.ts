@@ -1,514 +1,127 @@
-/* oxlint-disable typescript/no-base-to-string, typescript/unbound-method */
-import * as agent from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import * as tui from "@earendil-works/pi-tui";
+import { type ExtensionAPI, ToolExecutionComponent, type ToolRenderers } from "@earendil-works/pi-coding-agent";
+import { Box, type Component, Container, Text } from "@earendil-works/pi-tui";
 
-const TOOL_PATCH = Symbol.for("ava.pi.outputCompaction.tool.v1");
-const CONTAINER_PATCH = Symbol.for("ava.pi.outputCompaction.container.v1");
-const ASSISTANT_PATCH = Symbol.for("ava.pi.outputCompaction.assistant.v1");
-const ANSI_RE = /\u001b\[[0-9;]*m/g;
+const COMPACT_CALL_LINES = 3;
+const STATE_KEY = "outputCompaction";
 
-interface ThemeLike {
-  bold(text: string): string;
-  fg(color: string, text: string): string;
-  bg(color: string, text: string): string;
-}
+type CallRenderer = NonNullable<ToolRenderers["renderCall"]>;
+type ResultRenderer = NonNullable<ToolRenderers["renderResult"]>;
+type Theme = Parameters<CallRenderer>[1];
+type RenderContext = Parameters<CallRenderer>[2];
 
-interface ComponentLike {
-  render(width: number): string[];
-  invalidate(): void;
-}
-
-interface ContainerLike extends ComponentLike {
-  children?: unknown[];
-  addChild?(component: ComponentLike): void;
-}
-
-interface AssistantMessageLike {
-  updateContent(message: { content: Array<{ type: string }> }): void;
-  setExpanded?(expanded: boolean): void;
-  lastThinkingMessage?: { content: Array<{ type: string }> };
-}
-
-interface ToolRow extends ContainerLike {
-  toolName?: string;
-  args?: unknown;
-  expanded?: boolean;
-  isPartial?: boolean;
-  result?: { isError?: boolean; details?: unknown };
-  callRendererComponent?: ComponentLike;
-  contentBox?: ContainerLike;
-}
-
-type Constructor<T> = {
-  new (...args: any[]): T;
-  prototype: T;
+type RowState = {
+  call?: Component;
+  result?: Component;
+  hasResult?: boolean;
+  compact?: boolean;
 };
 
-type Runtime = {
-  AssistantMessageComponent: Constructor<AssistantMessageLike>;
-  ToolExecutionComponent: Constructor<ToolRow>;
-  Container: Constructor<ContainerLike>;
-  Box: new (paddingX?: number, paddingY?: number, bgFn?: (text: string) => string) => ContainerLike;
-  sliceByColumn(text: string, start: number, length: number, strict?: boolean): string;
-  truncateToWidth(text: string, width: number, ellipsis?: string, pad?: boolean): string;
-  visibleWidth(text: string): number;
-  wrapTextWithAnsi(text: string, width: number): string[];
+const rowState = (context: RenderContext): RowState => (context.state[STATE_KEY] ??= {});
+
+const lines = (render: (width: number) => string[]): Component => ({
+  render,
+  invalidate() {},
+});
+
+const blank = lines(() => [""]);
+
+const background = (context: RenderContext, theme: Theme) => {
+  const color = context.isPartial ? "toolPendingBg" : context.isError ? "toolErrorBg" : "toolSuccessBg";
+  return (text: string) => theme.bg(color, text);
 };
 
-type RenderCache = {
-  lines: string[];
-  members: ToolRow[];
-  versions: number[];
-  themeSample: string;
-  width: number;
+const shell = (context: RenderContext, theme: Theme, children: Component[]): Component => {
+  const box = new Box(context.outputPad, 0, background(context, theme));
+  children.forEach((child) => box.addChild(child));
+  return box;
 };
 
-type ToolPatchState = {
-  runtime: Runtime;
-  theme?: ThemeLike;
-  versions: WeakMap<ToolRow, number>;
-  cache: WeakMap<ToolRow, RenderCache>;
-  originalRender: (width: number) => string[];
-  originalUpdateDisplay: () => void;
-  patchedRender?: (width: number) => string[];
-  patchedUpdateDisplay?: () => void;
+const isCompact = (context: RenderContext) => !context.expanded && !context.isPartial && !context.isError;
+
+const textOutput = (result: Parameters<ResultRenderer>[0]) =>
+  result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+
+// Pi puts a blank line above every tool row, and no public API removes it. These patches drop it
+// between adjacent compact rows. They read the private `rendererState`, which is the `context.state`
+// object passed to the renderers above.
+type RowInternals = {
+  rendererState?: Record<string, RowState | undefined>;
+  joinsPrevious?: boolean;
 };
 
-type ContainerPatchState = {
-  toolPatch: ToolPatchState;
-  originalRender: (width: number) => string[];
-  patchedRender?: (width: number) => string[];
-};
+const internals = (row: unknown) => row as RowInternals;
 
-type AssistantPatchState = {
-  runtime: Runtime;
-  originalUpdateContent: AssistantMessageLike["updateContent"];
-  patchedUpdateContent?: AssistantMessageLike["updateContent"];
-  originalSetExpanded?: AssistantMessageLike["setExpanded"];
-  expanded: boolean;
-};
+const isCompactRow = (component: Component | undefined) =>
+  component instanceof ToolExecutionComponent && internals(component).rendererState?.[STATE_KEY]?.compact === true;
 
-type CallSummary = {
-  label: string;
-  summary: string;
-};
+function patchRowSpacing(): () => void {
+  const container = Container.prototype;
+  const row = ToolExecutionComponent.prototype;
+  const original = { render: container.render, rowRender: row.render, rowMouse: row.handleMouse };
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_RE, "");
-}
-
-function hasVisibleContent(line: string): boolean {
-  return stripAnsi(line).trim().length > 0;
-}
-
-function compactArgs(args: unknown, runtime: Runtime): string {
-  if (args === undefined || args === null) return "";
-  try {
-    const text = JSON.stringify(args);
-    if (!text || text === "{}") return "";
-    return runtime.truncateToWidth(text, 240, "…", false);
-  } catch {
-    return runtime.truncateToWidth(String(args), 240, "…", false);
-  }
-}
-
-function trimRenderedLine(text: string, runtime: Runtime): string {
-  const plain = stripAnsi(text);
-  const leading = plain.match(/^\s*/)?.[0] ?? "";
-  const trimmed = plain.trim();
-  if (!trimmed) return "";
-  return runtime.sliceByColumn(text, runtime.visibleWidth(leading), runtime.visibleWidth(trimmed)).trimEnd();
-}
-
-function removeExpandHint(text: string, runtime: Runtime): string {
-  const plain = stripAnsi(text).trimEnd();
-  const match = plain.match(/\s+\([^)]*to expand\)$/i);
-  if (match?.index === undefined) return text.trimEnd();
-  return runtime.sliceByColumn(text, 0, runtime.visibleWidth(plain.slice(0, match.index))).trimEnd();
-}
-
-export function restoreExpandKeyHint(
-  text: string,
-  width: number,
-  runtime: Pick<Runtime, "sliceByColumn" | "truncateToWidth" | "visibleWidth">,
-): string {
-  const plain = stripAnsi(text);
-  if (!plain.includes("to expand") || /ctrl\+o/i.test(plain)) return text;
-  const marker = " to expand";
-  const index = plain.lastIndexOf(marker);
-  if (index < 0) return text;
-  const restored = `${runtime.sliceByColumn(text, 0, runtime.visibleWidth(plain.slice(0, index)))}ctrl+o${runtime.sliceByColumn(
-    text,
-    runtime.visibleWidth(plain.slice(0, index)),
-    runtime.visibleWidth(plain.slice(index)),
-  )}`;
-  return runtime.truncateToWidth(restored, width, "", false);
-}
-
-function renderedCallSummary(row: ToolRow, width: number, runtime: Runtime, theme: ThemeLike): CallSummary {
-  let component = row.callRendererComponent;
-  if (!component && Array.isArray(row.contentBox?.children)) {
-    component = row.contentBox.children[0] as ComponentLike | undefined;
-  }
-
-  if (component?.render) {
-    const visibleLines = component.render(Math.max(1, width)).filter(hasVisibleContent);
-    const first = visibleLines[0] ? trimRenderedLine(visibleLines[0], runtime) : "";
-    const plain = stripAnsi(first);
-    const heading = /^(\S+)(\s*)/.exec(plain);
-    const expected = row.toolName === "bash" ? "$" : row.toolName;
-    const knownHeading = heading?.[1] === expected || (row.toolName === "read" && heading?.[1] === "[skill]");
-
-    if (heading && knownHeading) {
-      const start = runtime.visibleWidth((heading[1] ?? "") + (heading[2] ?? ""));
-      const firstSummary = removeExpandHint(
-        runtime.sliceByColumn(first, start, Math.max(0, runtime.visibleWidth(first) - start)),
-        runtime,
-      );
-      const continuations = visibleLines
-        .slice(1, 3)
-        .map((line) => trimRenderedLine(line, runtime))
-        .filter(hasVisibleContent);
-      if (visibleLines.length > 3) continuations.push(theme.fg("muted", "…"));
-      const summary = [firstSummary, ...continuations].filter(hasVisibleContent).join(theme.fg("muted", " · "));
-      return {
-        label: heading[1] ?? expected ?? "tool",
-        summary: runtime.truncateToWidth(summary, 400, "…", false),
-      };
-    }
-  }
-
-  return {
-    label: row.toolName === "bash" ? "$" : (row.toolName ?? "tool"),
-    summary: compactArgs(row.args, runtime),
-  };
-}
-
-function wrappedCallLines(call: CallSummary, width: number, runtime: Runtime, theme: ThemeLike): string[] {
-  const label = theme.fg("toolTitle", theme.bold(call.label));
-  if (!call.summary) {
-    return [runtime.truncateToWidth(label, width, "", false)];
-  }
-
-  const prefix = `${label} `;
-  const indent = runtime.visibleWidth(prefix);
-  if (width <= indent) {
-    return [runtime.truncateToWidth(prefix, width, "", false)];
-  }
-
-  return runtime
-    .wrapTextWithAnsi(call.summary, width - indent)
-    .map((line, index) =>
-      runtime.truncateToWidth((index === 0 ? prefix : " ".repeat(indent)) + line, width, "", false),
-    );
-}
-
-function sameMembers(left: ToolRow[], right: ToolRow[]): boolean {
-  return left.length === right.length && left.every((member, index) => member === right[index]);
-}
-
-function renderCompactBlock(rows: [ToolRow, ...ToolRow[]], width: number, state: ToolPatchState): string[] {
-  const theme = state.theme;
-  if (!theme) return state.originalRender.call(rows[0], width);
-
-  const themeSample = theme.fg("toolTitle", "x") + theme.fg("muted", "x") + theme.bg("toolSuccessBg", "x");
-  const versions = rows.map((row) => state.versions.get(row) ?? 0);
-  const cached = state.cache.get(rows[0]);
-  if (
-    cached &&
-    cached.width === width &&
-    cached.themeSample === themeSample &&
-    sameMembers(cached.members, rows) &&
-    cached.versions.every((version, index) => version === versions[index])
-  ) {
-    return cached.lines;
-  }
-
-  const content: ComponentLike = {
-    render(innerWidth: number): string[] {
-      return rows.flatMap((row) =>
-        wrappedCallLines(renderedCallSummary(row, innerWidth, state.runtime, theme), innerWidth, state.runtime, theme),
-      );
-    },
-    invalidate() {},
-  };
-  const box = new state.runtime.Box(1, 1, (text) => theme.bg("toolSuccessBg", text));
-  box.addChild?.(content);
-  const lines = ["", ...box.render(width)];
-  state.cache.set(rows[0], {
-    lines,
-    members: [...rows],
-    versions,
-    themeSample,
-    width,
-  });
-  return lines;
-}
-
-function isSettledSuccess(row: ToolRow): boolean {
-  return row.expanded === false && row.isPartial === false && !!row.result && !row.result.isError;
-}
-
-function renderContainer(container: ContainerLike, width: number, state: ContainerPatchState): string[] {
-  const children = container.children;
-  if (!Array.isArray(children)) {
-    return state.originalRender.call(container, width);
-  }
-
-  const lines: string[] = [];
-  const rendered = new Map<number, string[]>();
-  const renderAt = (index: number): string[] => {
-    const existing = rendered.get(index);
-    if (existing) return existing;
-    const child = children[index] as Partial<ComponentLike> | undefined;
-    const value = child?.render ? child.render(width) : [];
-    rendered.set(index, value);
-    return value;
-  };
-
-  for (let index = 0; index < children.length; index++) {
-    const child = children[index];
-    if (!(child instanceof state.toolPatch.runtime.ToolExecutionComponent) || !isSettledSuccess(child)) {
-      lines.push(...renderAt(index));
-      continue;
-    }
-
-    const group: [ToolRow, ...ToolRow[]] = [child];
-    let lastMember = index;
-    for (let candidateIndex = index + 1; candidateIndex < children.length; candidateIndex++) {
-      const candidate = children[candidateIndex];
-      if (candidate instanceof state.toolPatch.runtime.ToolExecutionComponent) {
-        if (!isSettledSuccess(candidate)) break;
-        group.push(candidate);
-        lastMember = candidateIndex;
-      } else if (renderAt(candidateIndex).some(hasVisibleContent)) {
-        break;
-      }
-    }
-
-    lines.push(...renderCompactBlock(group, width, state.toolPatch));
-    index = lastMember;
-  }
-
-  return lines;
-}
-
-function installAssistantPatch(runtime: Runtime): AssistantPatchState | undefined {
-  const proto = runtime.AssistantMessageComponent?.prototype as AssistantMessageLike & {
-    [ASSISTANT_PATCH]?: AssistantPatchState;
-  };
-  if (!proto || typeof proto.updateContent !== "function") return undefined;
-
-  const existing = proto[ASSISTANT_PATCH];
-  if (existing) return existing;
-
-  const state: AssistantPatchState = {
-    runtime,
-    originalUpdateContent: proto.updateContent,
-    originalSetExpanded: proto.setExpanded,
-    expanded: false,
-  };
-  const patchedUpdateContent = function updateContentWithoutThinking(
-    this: AssistantMessageLike,
-    message: { content: Array<{ type: string }> },
-  ): void {
-    this.lastThinkingMessage = message;
-    state.originalUpdateContent.call(this, {
-      ...message,
-      content: state.expanded ? message.content : message.content.filter((content) => content.type !== "thinking"),
+  container.render = function (this: Container, width: number) {
+    this.children.forEach((child, index) => {
+      if (!(child instanceof ToolExecutionComponent)) return;
+      internals(child).joinsPrevious =
+        isCompactRow(child) &&
+        isCompactRow(this.children.slice(0, index).findLast((previous) => previous.render(width).length > 0));
     });
+    return original.render.call(this, width);
   };
-  proto.setExpanded = function setExpandedShowThinking(this: AssistantMessageLike, expanded: boolean): void {
-    state.expanded = expanded;
-    state.originalSetExpanded?.call(this, expanded);
-    if (this.lastThinkingMessage) patchedUpdateContent.call(this, this.lastThinkingMessage);
+  row.render = function (this: ToolExecutionComponent, width: number) {
+    const rendered = original.rowRender.call(this, width);
+    return internals(this).joinsPrevious && rendered[0] === "" ? rendered.slice(1) : rendered;
+  };
+  row.handleMouse = function (this: ToolExecutionComponent, event) {
+    const shifted = internals(this).joinsPrevious ? { ...event, y: event.y + 1, height: event.height + 1 } : event;
+    return original.rowMouse.call(this, shifted);
   };
 
-  state.patchedUpdateContent = patchedUpdateContent;
-  proto.updateContent = patchedUpdateContent;
-  Object.defineProperty(proto, ASSISTANT_PATCH, {
-    configurable: true,
-    value: state,
+  return () => {
+    container.render = original.render;
+    row.render = original.rowRender;
+    row.handleMouse = original.rowMouse;
+  };
+}
+
+export default function (pi: ExtensionAPI) {
+  const unpatchRowSpacing = patchRowSpacing();
+  pi.on("session_shutdown", unpatchRowSpacing);
+
+  pi.registerToolRenderer((toolName, next) => {
+    const base = next();
+    if (!base) return undefined;
+
+    const renderCall: CallRenderer = (args, theme, context) => {
+      const state = rowState(context);
+      state.call = base.renderCall
+        ? base.renderCall(args, theme, { ...context, lastComponent: state.call })
+        : new Text(theme.fg("toolTitle", theme.bold(toolName)), 0, 0);
+      const call = state.call;
+      state.compact = isCompact(context);
+
+      if (state.compact) {
+        return shell(context, theme, [lines((width) => call.render(width).slice(0, COMPACT_CALL_LINES))]);
+      }
+      return shell(context, theme, [blank, call, lines(() => (state.hasResult ? [] : [""]))]);
+    };
+
+    const renderResult: ResultRenderer = (result, options, theme, context) => {
+      const state = rowState(context);
+      state.hasResult = true;
+      if (isCompact(context)) return new Container();
+
+      state.result = base.renderResult
+        ? base.renderResult(result, options, theme, { ...context, lastComponent: state.result })
+        : new Text(theme.fg("toolOutput", textOutput(result)), 0, 0);
+      return shell(context, theme, [state.result, blank]);
+    };
+
+    return { renderShell: "self", renderCall, renderResult };
   });
-  return state;
-}
-
-function uninstallAssistantPatch(state: AssistantPatchState | undefined): void {
-  if (!state) return;
-  const proto = state.runtime.AssistantMessageComponent.prototype as AssistantMessageLike & {
-    [ASSISTANT_PATCH]?: AssistantPatchState;
-  };
-  if (proto[ASSISTANT_PATCH] !== state || proto.updateContent !== state.patchedUpdateContent) {
-    return;
-  }
-  proto.updateContent = state.originalUpdateContent;
-  if (state.originalSetExpanded) proto.setExpanded = state.originalSetExpanded;
-  else delete proto.setExpanded;
-  delete proto[ASSISTANT_PATCH];
-}
-
-function installToolPatch(runtime: Runtime): ToolPatchState | undefined {
-  const proto = runtime.ToolExecutionComponent?.prototype as ToolRow & {
-    [TOOL_PATCH]?: ToolPatchState;
-    updateDisplay?: () => void;
-  };
-  if (!proto || typeof proto.render !== "function" || typeof proto.updateDisplay !== "function") {
-    return undefined;
-  }
-
-  const existing = proto[TOOL_PATCH];
-  if (existing) return existing;
-
-  const state: ToolPatchState = {
-    runtime,
-    versions: new WeakMap(),
-    cache: new WeakMap(),
-    originalRender: proto.render,
-    originalUpdateDisplay: proto.updateDisplay,
-  };
-  const patchedUpdateDisplay = function updateDisplayWithExpandedErrors(this: ToolRow): void {
-    state.versions.set(this, (state.versions.get(this) ?? 0) + 1);
-    state.originalUpdateDisplay.call(this);
-  };
-  const patchedRender = function renderCompactSuccess(this: ToolRow, width: number): string[] {
-    if (!isSettledSuccess(this)) {
-      return state.originalRender.call(this, width).map((line) => restoreExpandKeyHint(line, width, state.runtime));
-    }
-    try {
-      return renderCompactBlock([this], width, state);
-    } catch {
-      return state.originalRender.call(this, width);
-    }
-  };
-
-  state.patchedRender = patchedRender;
-  state.patchedUpdateDisplay = patchedUpdateDisplay;
-  proto.render = patchedRender;
-  proto.updateDisplay = patchedUpdateDisplay;
-  Object.defineProperty(proto, TOOL_PATCH, {
-    configurable: true,
-    value: state,
-  });
-  return state;
-}
-
-function installContainerPatch(runtime: Runtime, toolPatch: ToolPatchState): ContainerPatchState | undefined {
-  const proto = runtime.Container?.prototype as ContainerLike & {
-    [CONTAINER_PATCH]?: ContainerPatchState;
-  };
-  if (!proto || typeof proto.render !== "function") return undefined;
-
-  const existing = proto[CONTAINER_PATCH];
-  if (existing) {
-    existing.toolPatch = toolPatch;
-    return existing;
-  }
-
-  const state: ContainerPatchState = {
-    toolPatch,
-    originalRender: proto.render,
-  };
-  const patchedRender = function renderWithGroupedTools(this: ContainerLike, width: number): string[] {
-    if (
-      !Array.isArray(this.children) ||
-      !this.children.some((child) => child instanceof runtime.ToolExecutionComponent)
-    ) {
-      return state.originalRender.call(this, width);
-    }
-    try {
-      return renderContainer(this, width, state);
-    } catch {
-      return state.originalRender.call(this, width);
-    }
-  };
-
-  state.patchedRender = patchedRender;
-  proto.render = patchedRender;
-  Object.defineProperty(proto, CONTAINER_PATCH, {
-    configurable: true,
-    value: state,
-  });
-  return state;
-}
-
-function uninstallContainerPatch(state: ContainerPatchState | undefined): void {
-  if (!state) return;
-  const proto = state.toolPatch.runtime.Container.prototype as ContainerLike & {
-    [CONTAINER_PATCH]?: ContainerPatchState;
-  };
-  if (proto[CONTAINER_PATCH] !== state || proto.render !== state.patchedRender) return;
-  proto.render = state.originalRender;
-  delete proto[CONTAINER_PATCH];
-}
-
-function uninstallToolPatch(state: ToolPatchState | undefined): void {
-  if (!state) return;
-  const proto = state.runtime.ToolExecutionComponent.prototype as ToolRow & {
-    [TOOL_PATCH]?: ToolPatchState;
-    updateDisplay?: () => void;
-  };
-  if (
-    proto[TOOL_PATCH] !== state ||
-    proto.render !== state.patchedRender ||
-    proto.updateDisplay !== state.patchedUpdateDisplay
-  ) {
-    return;
-  }
-  proto.render = state.originalRender;
-  proto.updateDisplay = state.originalUpdateDisplay;
-  delete proto[TOOL_PATCH];
-}
-
-// Extensions import the running Pi's own modules (jiti virtual modules, or the compiled binary's copy), so
-// patching these prototypes affects the UI that is actually rendering.
-const RUNTIME_KEYS = [
-  "AssistantMessageComponent",
-  "ToolExecutionComponent",
-  "Container",
-  "Box",
-  "sliceByColumn",
-  "truncateToWidth",
-  "visibleWidth",
-  "wrapTextWithAnsi",
-];
-
-function isRuntime(host: unknown): host is Runtime {
-  if (typeof host !== "object" || host === null) return false;
-  const available = new Set(Object.keys(host));
-  return RUNTIME_KEYS.every((key) => available.has(key));
-}
-
-async function loadRuntime(): Promise<Runtime> {
-  const host = { ...agent, ...tui };
-  if (!isRuntime(host)) throw new Error("Pi's output rendering API is unavailable");
-  return host;
-}
-
-export default async function (pi: ExtensionAPI) {
-  let runtime: Runtime;
-  try {
-    runtime = await loadRuntime();
-  } catch {
-    return;
-  }
-
-  const assistantPatch = installAssistantPatch(runtime);
-  const toolPatch = installToolPatch(runtime);
-  const containerPatch = toolPatch ? installContainerPatch(runtime, toolPatch) : undefined;
 
   pi.on("session_start", (_event, ctx) => {
-    if (toolPatch) {
-      toolPatch.theme = ctx.ui.theme;
-      toolPatch.cache = new WeakMap();
-    }
     ctx.ui.setToolsExpanded(false);
-    if (assistantPatch) assistantPatch.expanded = false;
-  });
-
-  pi.on("session_shutdown", () => {
-    uninstallContainerPatch(containerPatch);
-    uninstallToolPatch(toolPatch);
-    uninstallAssistantPatch(assistantPatch);
+    ctx.ui.setHiddenThinkingLabel("");
   });
 }
