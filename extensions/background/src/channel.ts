@@ -6,6 +6,8 @@
  * (parent -> child commands). Each side tails the other's file from the
  * start, so a command written before the child starts is still delivered.
  * `parent.pid` holds the parent's process ID; the child exits when it dies.
+ * The child answers each `compact` command with a `CompactionReply` in the
+ * events file.
  */
 
 import * as fs from "node:fs";
@@ -19,7 +21,16 @@ const POLL_MS = 150;
 export type ParentCommand =
   | { readonly type: "send"; readonly text: string }
   | { readonly type: "answer"; readonly questionId: string; readonly text: string }
-  | { readonly type: "interrupt" };
+  | { readonly type: "interrupt" }
+  | { readonly type: "compact"; readonly id: string; readonly instructions?: string };
+
+export interface CompactionReply {
+  readonly type: "compacted";
+  readonly id: string;
+  readonly tokensBefore?: number;
+  readonly estimatedTokensAfter?: number;
+  readonly errorText?: string;
+}
 
 export function channelPaths(dir: string) {
   return {
@@ -76,9 +87,19 @@ export function isParentCommand(value: unknown): value is ParentCommand {
       return typeof command.questionId === "string" && typeof command.text === "string";
     case "interrupt":
       return true;
+    case "compact":
+      return (
+        typeof command.id === "string" &&
+        (command.instructions === undefined || typeof command.instructions === "string")
+      );
     default:
       return false;
   }
+}
+
+export function isCompactionReply(value: unknown): value is CompactionReply {
+  const reply = value as Record<string, unknown> | null;
+  return reply?.type === "compacted" && typeof reply.id === "string";
 }
 
 /**

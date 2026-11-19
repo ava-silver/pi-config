@@ -5,9 +5,9 @@
  * ../child.ts); hc only starts, checks, and stops the terminal.
  *
  * - spawn writes the prompt to the inbox, then starts the terminal;
- * - send/answer/interrupt append commands to the inbox;
- * - a send after the child's pi exited (or after restore) starts a new
- *   terminal on the same session file;
+ * - send/answer/interrupt/compact append commands to the inbox;
+ * - a send or compact after the child's pi exited (or after restore) starts
+ *   a new terminal on the same session file;
  * - closing the scope kills and removes the terminal.
  */
 
@@ -21,14 +21,24 @@ import type { Cause, Scope } from "effect";
 import { Effect, Queue, Stream } from "effect";
 import { resolveChildModel } from "../../../shared/child-session.ts";
 import { sessionCost } from "../../../shared/session-cost.ts";
-import { appendLine, CHANNEL_ENV, channelPaths, isSubagentEvent, type ParentCommand, tailJsonl } from "../channel.ts";
-import type { SpawnTask, SubagentEvent, SubagentMeta, SubagentSession } from "../domain.ts";
+import {
+  appendLine,
+  CHANNEL_ENV,
+  channelPaths,
+  type CompactionReply,
+  isCompactionReply,
+  isSubagentEvent,
+  type ParentCommand,
+  tailJsonl,
+} from "../channel.ts";
+import type { CompactionOutcome, SpawnTask, SubagentEvent, SubagentMeta, SubagentSession } from "../domain.ts";
 import { SendError, SpawnError } from "../domain.ts";
 import { boundedError, replayTranscript } from "./pi-events.ts";
 
 const HC_TIMEOUT_MS = 15_000;
 const LIVENESS_MS = 3_000;
 const INTERRUPT_WAIT_MS = 4_000;
+const COMPACT_TIMEOUT_MS = 10 * 60_000;
 
 /** Runs `hc` with arguments and resolves with its stdout. */
 export type HcRunner = (args: ReadonlyArray<string>) => Promise<string>;
@@ -90,6 +100,7 @@ interface HcState {
   sessionFile: string | undefined;
   meta: SubagentMeta;
   settleWaiters: Array<() => void>;
+  compactions: Map<string, (reply: CompactionReply) => void>;
 }
 
 const makeHcSession = (
@@ -121,6 +132,7 @@ const makeHcSession = (
         ...(sessionFilePath === undefined ? {} : { sessionFilePath }),
       },
       settleWaiters: [],
+      compactions: new Map(),
     };
 
     const emit = (event: SubagentEvent) => {
@@ -152,16 +164,17 @@ const makeHcSession = (
       appendLine(channelPaths(state.dir).inbox, value);
     };
 
-    /** Start a terminal whose pi runs `text` first. */
-    const launch = async (text: string) => {
+    /** Start a terminal whose pi handles `first` first. */
+    const launch = async (first: ParentCommand) => {
       removeChannel();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
       state.dir = dir;
       const paths = channelPaths(dir);
       fs.writeFileSync(paths.parentPid, String(process.pid), { mode: 0o600 });
-      appendLine(paths.inbox, { type: "send", text } satisfies ParentCommand);
+      appendLine(paths.inbox, first);
       state.stopTail = tailJsonl(paths.events, (value) => {
-        if (isSubagentEvent(value)) emit(value);
+        if (isCompactionReply(value)) state.compactions.get(value.id)?.(value);
+        else if (isSubagentEvent(value)) emit(value);
       });
       const piArgs = [
         ...(state.sessionFile
@@ -192,7 +205,7 @@ const makeHcSession = (
           ...options.piCommand,
           ...piArgs,
         ]);
-      state.active = true;
+      state.active = first.type === "send";
       try {
         state.address = parseAddress(
           await run(false).catch((error: { kind?: string }) => {
@@ -221,6 +234,8 @@ const makeHcSession = (
         const address = state.address;
         state.closed = true;
         for (const waiter of state.settleWaiters.splice(0)) waiter();
+        for (const [id, resolve] of state.compactions)
+          resolve({ type: "compacted", id, errorText: "Subagent session is closed." });
         removeChannel();
         if (address) {
           await hc(["kill", address]).catch(() => undefined);
@@ -241,7 +256,7 @@ const makeHcSession = (
       });
     } else {
       yield* Effect.tryPromise({
-        try: () => launch(task.prompt),
+        try: () => launch({ type: "send", text: task.prompt }),
         catch: (error) => new SpawnError({ message: boundedError(error) }),
       });
     }
@@ -260,7 +275,45 @@ const makeHcSession = (
               return;
             }
             if (!state.sessionFile) throw new Error("The subagent's session file is unknown.");
-            await launch(text);
+            await launch({ type: "send", text });
+          },
+          catch: toSendError,
+        }),
+      compact: (instructions) =>
+        Effect.tryPromise({
+          try: async (): Promise<CompactionOutcome> => {
+            if (state.closed) throw new Error("Subagent session is closed.");
+            const id = randomBytes(4).toString("hex");
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const replied = new Promise<CompactionReply>((resolve) => {
+              state.compactions.set(id, resolve);
+              timer = setTimeout(
+                () => resolve({ type: "compacted", id, errorText: "Compaction timed out." }),
+                COMPACT_TIMEOUT_MS,
+              );
+            });
+            const value: ParentCommand = {
+              type: "compact",
+              id,
+              ...(instructions === undefined ? {} : { instructions }),
+            };
+            try {
+              if (state.address && (await isLive(hc, state.address))) command(value);
+              else if (state.sessionFile) await launch(value);
+              else throw new Error("The subagent's session file is unknown.");
+              const reply = await replied;
+              if (reply.errorText !== undefined || reply.tokensBefore === undefined)
+                throw new Error(reply.errorText ?? "Compaction failed.");
+              return {
+                tokensBefore: reply.tokensBefore,
+                ...(reply.estimatedTokensAfter === undefined
+                  ? {}
+                  : { estimatedTokensAfter: reply.estimatedTokensAfter }),
+              };
+            } finally {
+              clearTimeout(timer);
+              state.compactions.delete(id);
+            }
           },
           catch: toSendError,
         }),

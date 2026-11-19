@@ -20,6 +20,7 @@ import {
   appendLine,
   CHANNEL_ENV,
   channelPaths,
+  type CompactionReply,
   isParentCommand,
   type ParentCommand,
   processIsRunning,
@@ -96,7 +97,27 @@ export function setupSubagentChild(pi: ExtensionAPI, dir: string) {
       case "interrupt":
         ctx.abort();
         break;
+      case "compact":
+        compact(ctx, command.id, command.instructions);
+        break;
     }
+  };
+  const compact = (context: ExtensionContext, id: string, instructions: string | undefined) => {
+    const reply = (fields: Omit<CompactionReply, "type" | "id">) =>
+      appendLine(paths.events, { type: "compacted", id, ...fields } satisfies CompactionReply);
+    // Compaction aborts an active run, such as one the user started in this terminal.
+    if (!context.isIdle()) return reply({ errorText: "The subagent is busy with a turn in its terminal." });
+    context.compact({
+      ...(instructions === undefined ? {} : { customInstructions: instructions }),
+      onComplete: (result) => {
+        emitUsage(context);
+        reply({
+          tokensBefore: result.tokensBefore,
+          ...(result.estimatedTokensAfter === undefined ? {} : { estimatedTokensAfter: result.estimatedTokensAfter }),
+        });
+      },
+      onError: (error) => reply({ errorText: error.message }),
+    });
   };
 
   pi.on("session_start", (_event, context) => {

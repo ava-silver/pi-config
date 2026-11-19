@@ -6,6 +6,7 @@
  * - supports send() while running (queued-steer rendering) and while idle
  *   (fresh run);
  * - supports interrupt (RunSettled Interrupted -> status "error");
+ * - compaction always succeeds with fixed token counts;
  * - fails the run when the prompt starts with "FAIL:" (error-path testing);
  * - appends every event to a JSONL "session file" in tmpdir.
  */
@@ -263,6 +264,7 @@ const makeStubSession = (profile: StubProfile, task: SpawnTask): Effect.Effect<S
           }
           return Queue.offer(answers, text).pipe(Effect.asVoid);
         }),
+      compact: () => Effect.succeed({ tokensBefore: 50_000, estimatedTokensAfter: 5_000 }),
       interrupt: Effect.gen(function* () {
         // Drop queued prompts so interrupting cannot immediately start
         // another turn, then stop the active turn. A prompt may be mid-flight

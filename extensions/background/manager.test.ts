@@ -184,3 +184,30 @@ test("messaging a settled subagent reactivates it immediately", async () => {
     assert.ok(afterSecond?.lastActivityAt);
   });
 });
+
+test("compaction refuses running subagents and compacts settled ones", async () => {
+  await withManager(async (manager, runtime) => {
+    const running = await runTool(runtime, manager.spawn(task("Still going")));
+    const refused = await runTool(runtime, manager.compact([running.id]));
+    assert.match(refused[0]?.errorText ?? "", /still running/);
+
+    await runTool(runtime, manager.waitFor([running.id]));
+    const [compacted] = await runTool(runtime, manager.compact([running.id]));
+    assert.deepEqual(compacted, { id: running.id, title: "test", tokensBefore: 50_000, estimatedTokensAfter: 5_000 });
+    assert.equal(manager.view.get(running.id)?.usage.tokens, 5_000);
+  });
+});
+
+test("removal refuses running subagents and untracks settled ones", async () => {
+  await withManager(async (manager, runtime) => {
+    const snap = await runTool(runtime, manager.spawn(task("Still going")));
+    const [refused] = await runTool(runtime, manager.remove([snap.id]));
+    assert.match(refused?.errorText ?? "", /still running/);
+    assert.ok(manager.view.get(snap.id));
+
+    await runTool(runtime, manager.waitFor([snap.id]));
+    assert.deepEqual(await runTool(runtime, manager.remove([snap.id])), [{ id: snap.id, title: "test" }]);
+    assert.equal(manager.view.get(snap.id), undefined);
+    await assert.rejects(runTool(runtime, manager.send(snap.id, "again")), /no longer tracked/);
+  });
+});

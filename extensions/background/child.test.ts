@@ -10,7 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { appendLine, channelPaths, isSubagentEvent } from "./src/channel.ts";
+import { appendLine, channelPaths, isCompactionReply, isSubagentEvent } from "./src/channel.ts";
 import { setupSubagentChild } from "./src/child.ts";
 import type { SubagentEvent } from "./src/domain.ts";
 
@@ -27,6 +27,10 @@ function fakeChild(parentPid = process.pid) {
     sessionManager: { getSessionFile: () => "/tmp/s.jsonl", getBranch: () => [], getEntries: () => [] },
     getContextUsage: () => undefined,
     isIdle: () => true,
+    compact: (options: { customInstructions?: string; onComplete?: (result: unknown) => void }) => {
+      calls.push(`compact: ${options.customInstructions ?? ""}`);
+      options.onComplete?.({ tokensBefore: 90_000, estimatedTokensAfter: 9_000 });
+    },
     abort: () => calls.push("abort"),
     shutdown: () => calls.push("shutdown"),
   } as unknown as ExtensionContext;
@@ -61,10 +65,19 @@ function fakeChild(parentPid = process.pid) {
     const before = sent.length;
     for (let i = 0; i < 100 && sent.length === before; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   };
+  const replies = () =>
+    fs
+      .readFileSync(paths.events, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as unknown)
+      .filter(isCompactionReply);
   return {
+    paths,
     sent,
     calls,
     events,
+    replies,
     fire,
     turn,
     fromParent,
@@ -129,6 +142,22 @@ test("a parent message that steers a user's turn makes that turn reported", asyn
       { _tag: "RunStarted" },
       { _tag: "RunSettled", outcome: { _tag: "Completed", finalText: "both fine" } },
     ]);
+  } finally {
+    child.dispose();
+  }
+});
+
+test("a parent compact command compacts the session and replies with token counts", async () => {
+  const child = fakeChild();
+  try {
+    appendLine(child.paths.inbox, { type: "compact", id: "c1", instructions: "keep the plan" });
+    for (let i = 0; i < 100 && child.replies().length === 0; i++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(child.calls, ["compact: keep the plan"]);
+    assert.deepEqual(child.replies(), [
+      { type: "compacted", id: "c1", tokensBefore: 90_000, estimatedTokensAfter: 9_000 },
+    ]);
+    assert.deepEqual(runEvents(child.events()), []);
   } finally {
     child.dispose();
   }

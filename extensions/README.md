@@ -36,7 +36,7 @@ bun install --frozen-lockfile
 bun run verify
 ```
 
-Use `bun fmt` to apply formatting. Restart Pi or run `/reload` after changing extension code.
+Use `bun fmt` to apply formatting. Restart Pi or run `/reload` after changing extension code. `/reload` keeps the running subagent manager so subagents survive it, so restart Pi after changing `background/src/manager.ts` or its backends.
 
 Bun manages dependencies and commands.
 

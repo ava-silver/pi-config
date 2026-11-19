@@ -9,6 +9,8 @@
  * - subagent_wait: block until the listed subagents settle or ask a question.
  * - subagent_message: answer a pending question or steer/continue a subagent.
  * - subagent_cancel: stop one or more running subagents.
+ * - subagent_compact: summarize idle subagents' context so they resume cheaply.
+ * - subagent_remove: stop tracking idle subagents, here and on session resume.
  * - subagent_list: list all subagents.
  *
  * Subagent results are delivered automatically when they settle. The parent
@@ -41,7 +43,7 @@ import {
   type SubagentSnapshot,
 } from "./src/domain.ts";
 import { COMPACT_ROW } from "../shared/compact-row.ts";
-import { formatContextUtilization } from "../shared/context-utilization.ts";
+import { formatCompactTokens, formatContextUtilization } from "../shared/context-utilization.ts";
 import { hcBackendAvailable } from "./src/backends/hc.ts";
 import { processIsRunning } from "./src/channel.ts";
 import { registerBackgroundCost, registerTransientSegment } from "../shared/footer-segments.ts";
@@ -56,7 +58,11 @@ import {
   SUBAGENT_MESSAGE_TOOL_DESCRIPTION,
   SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS,
   SUBAGENT_CANCEL_TOOL_DESCRIPTION,
+  SUBAGENT_COMPACT_PARAMETER_DESCRIPTIONS,
+  SUBAGENT_COMPACT_TOOL_DESCRIPTION,
   SUBAGENT_LIST_TOOL_DESCRIPTION,
+  SUBAGENT_REMOVE_PARAMETER_DESCRIPTIONS,
+  SUBAGENT_REMOVE_TOOL_DESCRIPTION,
   SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS,
   SUBAGENT_SPAWN_PROMPT_GUIDELINES,
   SUBAGENT_SPAWN_PROMPT_SNIPPET,
@@ -81,6 +87,12 @@ interface PersistedReset {
   readonly reset: true;
 }
 
+interface PersistedRemoval {
+  readonly version: 1;
+  readonly id: string;
+  readonly removed: true;
+}
+
 interface SavedSession {
   runtime: SubagentRuntime | undefined;
   managerPromise: Promise<SubagentManagerShape> | undefined;
@@ -96,6 +108,29 @@ function savedSessionRegistry() {
 
 export function hasLiveSubagentOwner(records: Iterable<PersistedSubagent>): boolean {
   return [...records].some((record) => record.status === "running" && processIsRunning(record.ownerPid));
+}
+
+/**
+ * Subagent records to restore from a session branch, after resets and
+ * removals, and the highest id number ever recorded there.
+ */
+export function restorableSubagents(branch: ReadonlyArray<{ type: string; customType?: string; data?: unknown }>) {
+  const records = new Map<string, PersistedSubagent>();
+  let highestId = 0;
+  for (const entry of branch) {
+    if (entry.type !== "custom" || entry.customType !== SUBAGENT_STATE_ENTRY) continue;
+    const record = entry.data as
+      | (Partial<PersistedSubagent> & Partial<PersistedReset> & Partial<PersistedRemoval>)
+      | undefined;
+    if (record?.version !== 1) continue;
+    const idNumber = Number(/^sa-(\d+)$/.exec(record.id ?? "")?.[1] ?? 0);
+    highestId = Math.max(highestId, idNumber);
+    if (record.reset === true) records.clear();
+    else if (record.removed === true && typeof record.id === "string") records.delete(record.id);
+    else if (typeof record.id === "string" && typeof record.meta?.sessionFilePath === "string")
+      records.set(record.id, record as PersistedSubagent);
+  }
+  return { records, highestId };
 }
 
 function describeSubagent(snap: SubagentSnapshot) {
@@ -116,7 +151,9 @@ function describeSubagentProgress(snap: SubagentSnapshot) {
     ? `running ${liveTool.name}${liveTool.argsPreview ? ` -- ${liveTool.argsPreview}` : ""}`
     : snap.queued.length > 0
       ? "processing queued parent message"
-      : undefined;
+      : snap.compacting
+        ? "compacting"
+        : undefined;
   const question = snap.pendingQuestions[0];
   return [
     describeSubagent(snap),
@@ -126,6 +163,25 @@ function describeSubagentProgress(snap: SubagentSnapshot) {
   ]
     .filter(Boolean)
     .join(" | ");
+}
+
+/** Deduplicates ids and rejects unknown ones, listing the known ids for recovery. */
+function requireKnownIds(manager: SubagentManagerShape, ids: ReadonlyArray<string>) {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) throw new Error("Provide at least one subagent id.");
+  const unknown = unique.filter((id) => !manager.view.get(id));
+  if (unknown.length > 0) {
+    const known = manager.view.list().map((snap) => snap.id);
+    throw new Error(`Unknown subagent id(s): ${unknown.join(", ")}. Known: ${known.join(", ") || "none"}.`);
+  }
+  return unique;
+}
+
+/** A batch tool's text result, thrown as a tool error when every id failed. */
+function batchResult<T extends { errorText?: string }>(report: ReadonlyArray<T>, lines: string[]) {
+  const text = lines.join("\n");
+  if (report.every((entry) => entry.errorText !== undefined)) throw new Error(text);
+  return { content: [{ type: "text" as const, text }], details: { results: report } };
 }
 
 function truncatedOutput(snap: SubagentSnapshot, maxBytes = SUBAGENT_OUTPUT_MAX_BYTES): string {
@@ -146,6 +202,8 @@ interface SubagentController {
   getManager(): Promise<SubagentManagerShape>;
   getView(): SubagentManagerShape["view"] | undefined;
   consumeResults(ids: string[]): void;
+  /** Drop removed subagents' undelivered results and keep them out of session restore. */
+  forget(ids: string[]): void;
   start(ctx: ExtensionContext): Promise<void>;
   shutdown(preserve: boolean): Promise<void>;
   flushResults(): void;
@@ -181,6 +239,8 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
         ...(snap.settledAt === undefined ? {} : { settledAt: snap.settledAt }),
         ...(snap.errorText === undefined ? {} : { errorText: snap.errorText }),
         finalText: snap.finalText,
+        // Occupancy changes every turn; record it only while idle to keep state entries rare.
+        ...(snap.status === "running" || snap.usage.tokens === undefined ? {} : { contextTokens: snap.usage.tokens }),
         meta: snap.meta,
       };
       const signature = JSON.stringify(record);
@@ -283,6 +343,13 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
     getManager,
     getView: () => managerView,
     consumeResults: (ids) => resultDelivery.consume(ids),
+    forget(ids) {
+      resultDelivery.consume(ids);
+      for (const id of ids) {
+        persistedSignatures.delete(id);
+        pi.appendEntry(SUBAGENT_STATE_ENTRY, { version: 1, id, removed: true } satisfies PersistedRemoval);
+      }
+    },
     flushResults,
     async start(ctx) {
       sessionContext = ctx;
@@ -300,24 +367,14 @@ function createSubagentController(pi: ExtensionAPI): SubagentController {
         if (managerView && managerPromise) await managerPromise.then(connectManager);
         return;
       }
-      const records = new Map<string, PersistedSubagent>();
-      for (const entry of ctx.sessionManager.getBranch()) {
-        if (entry.type !== "custom" || entry.customType !== SUBAGENT_STATE_ENTRY) continue;
-        const record = entry.data as (Partial<PersistedSubagent> & Partial<PersistedReset>) | undefined;
-        if (record?.version !== 1) continue;
-        if (record.reset === true) {
-          records.clear();
-          continue;
-        }
-        if (typeof record.id === "string" && typeof record.meta?.sessionFilePath === "string")
-          records.set(record.id, record as PersistedSubagent);
-      }
-      if (records.size === 0) return;
+      const { records, highestId } = restorableSubagents(ctx.sessionManager.getBranch());
+      if (highestId === 0) return;
+      const manager = await getManager();
+      await runTool(getRuntime(), manager.reserveIds(highestId));
       if (hasLiveSubagentOwner(records.values())) {
         pi.appendEntry(SUBAGENT_STATE_ENTRY, { version: 1, reset: true } satisfies PersistedReset);
         return;
       }
-      const manager = await getManager();
       const tracked = [...records.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_TRACKED);
       for (const record of tracked) {
         await runTool(
@@ -538,12 +595,7 @@ function registerWaitTool(pi: ExtensionAPI, controller: SubagentController) {
     },
     async execute(_toolCallId, params, signal, onUpdate) {
       const manager = await controller.getManager();
-      const ids = [...new Set(params.ids)];
-      if (ids.length === 0) throw new Error("Provide at least one subagent id.");
-      const known = manager.view.list().map((snap) => snap.id);
-      const unknown = ids.filter((id) => !manager.view.get(id));
-      if (unknown.length > 0)
-        throw new Error(`Unknown subagent id(s): ${unknown.join(", ")}. Known: ${known.join(", ") || "none"}.`);
+      const ids = requireKnownIds(manager, params.ids);
       await runTool(
         controller.getRuntime(),
         manager.waitFor(ids, (pending) =>
@@ -639,6 +691,7 @@ function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentContr
       const manager = await controller.getManager();
       const message = params.message.trim();
       if (!message) throw new Error("Provide a non-empty message.");
+      requireKnownIds(manager, [params.id]);
       const result = await runTool(controller.getRuntime(), manager.message(params.id, message));
       const text =
         result.kind === "answered" ? `Answered ${params.id}: ${result.question.text}` : `Sent message to ${params.id}.`;
@@ -663,12 +716,7 @@ function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentContr
     },
     async execute(_toolCallId, params) {
       const manager = await controller.getManager();
-      const ids = [...new Set(params.ids)];
-      if (ids.length === 0) throw new Error("Provide at least one subagent id.");
-      const known = manager.view.list().map((snap) => snap.id);
-      const unknown = ids.filter((id) => !manager.view.get(id));
-      if (unknown.length > 0)
-        throw new Error(`Unknown subagent id(s): ${unknown.join(", ")}. Known: ${known.join(", ") || "none"}.`);
+      const ids = requireKnownIds(manager, params.ids);
       const report = await runTool(controller.getRuntime(), manager.cancel(ids));
       const lines = report.map((entry) =>
         entry.cancelled
@@ -685,6 +733,66 @@ function registerSimpleSubagentTools(pi: ExtensionAPI, controller: SubagentContr
           })),
         },
       };
+    },
+  });
+  pi.registerTool({
+    name: "subagent_compact",
+    label: "Compact Subagents",
+    description: SUBAGENT_COMPACT_TOOL_DESCRIPTION,
+    parameters: Type.Object({
+      ids: Type.Array(Type.String(), {
+        maxItems: 64,
+        description: SUBAGENT_COMPACT_PARAMETER_DESCRIPTIONS.ids,
+      }),
+      instructions: Type.Optional(Type.String({ description: SUBAGENT_COMPACT_PARAMETER_DESCRIPTIONS.instructions })),
+    }),
+    renderCall(args, theme) {
+      const label = args.ids?.join(", ") ?? "";
+      return new Text(theme.fg("toolTitle", "subagent_compact") + (label ? " " + theme.fg("dim", label) : ""), 0, 0);
+    },
+    async execute(_toolCallId, params, signal) {
+      const manager = await controller.getManager();
+      const ids = requireKnownIds(manager, params.ids);
+      const instructions = params.instructions?.trim() || undefined;
+      const report = await runTool(controller.getRuntime(), manager.compact(ids, instructions), {
+        ...(signal === undefined ? {} : { signal }),
+        interruptMessage: "Compaction wait aborted. Subagents may still finish compacting.",
+      });
+      const lines = report.map((entry) =>
+        entry.errorText !== undefined
+          ? `Did not compact ${entry.id} "${entry.title}": ${entry.errorText}`
+          : `Compacted ${entry.id} "${entry.title}": ${formatCompactTokens(entry.tokensBefore ?? 0)} tokens` +
+            (entry.estimatedTokensAfter === undefined
+              ? "."
+              : ` -> about ${formatCompactTokens(entry.estimatedTokensAfter)}.`),
+      );
+      return batchResult(report, lines);
+    },
+  });
+  pi.registerTool({
+    name: "subagent_remove",
+    label: "Remove Subagents",
+    description: SUBAGENT_REMOVE_TOOL_DESCRIPTION,
+    parameters: Type.Object({
+      ids: Type.Array(Type.String(), {
+        maxItems: 64,
+        description: SUBAGENT_REMOVE_PARAMETER_DESCRIPTIONS.ids,
+      }),
+    }),
+    renderCall(args, theme) {
+      const label = args.ids?.join(", ") ?? "";
+      return new Text(theme.fg("toolTitle", "subagent_remove") + (label ? " " + theme.fg("dim", label) : ""), 0, 0);
+    },
+    async execute(_toolCallId, params) {
+      const manager = await controller.getManager();
+      const report = await runTool(controller.getRuntime(), manager.remove(requireKnownIds(manager, params.ids)));
+      controller.forget(report.filter((entry) => entry.errorText === undefined).map((entry) => entry.id));
+      const lines = report.map((entry) =>
+        entry.errorText === undefined
+          ? `Removed ${entry.id} "${entry.title}".`
+          : `Did not remove ${entry.id} "${entry.title}": ${entry.errorText}`,
+      );
+      return batchResult(report, lines);
     },
   });
   pi.registerTool({

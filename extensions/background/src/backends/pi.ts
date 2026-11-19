@@ -324,6 +324,21 @@ const makePiSession = (
             ? Effect.void
             : new SendError({ message: `Question "${questionId}" is no longer pending.` }),
         ),
+      compact: (instructions) =>
+        Effect.tryPromise({
+          try: async () => {
+            if (state.closed) throw new Error("Subagent session is closed.");
+            const result = await session.compact(instructions);
+            control.emitUsage();
+            return {
+              tokensBefore: result.tokensBefore,
+              ...(result.estimatedTokensAfter === undefined
+                ? {}
+                : { estimatedTokensAfter: result.estimatedTokensAfter }),
+            };
+          },
+          catch: (error) => new SendError({ message: boundedError(error) }),
+        }),
       interrupt: interruptPiSession(session, state, emit),
     } satisfies SubagentSession;
   });

@@ -60,6 +60,7 @@ interface MutableSnapshot {
   liveTools: LiveToolState[];
   queued: SubagentSnapshot["queued"];
   pendingQuestions: SubagentQuestion[];
+  compacting: boolean;
   finalText: string;
   turns: number;
 }
@@ -110,6 +111,20 @@ export interface CancelResult {
   readonly cancelled: boolean;
 }
 
+export interface CompactResult {
+  readonly id: string;
+  readonly title: string;
+  readonly tokensBefore?: number;
+  readonly estimatedTokensAfter?: number;
+  readonly errorText?: string;
+}
+
+export interface RemoveResult {
+  readonly id: string;
+  readonly title: string;
+  readonly errorText?: string;
+}
+
 export type SubagentMessageResult =
   | { readonly kind: "answered"; readonly question: SubagentQuestion }
   | { readonly kind: "sent" };
@@ -117,6 +132,8 @@ export type SubagentMessageResult =
 export interface SubagentManagerShape {
   spawn(task: SpawnTask): Effect.Effect<SubagentSnapshot, SpawnError | ConcurrencyLimitError>;
   restore(records: ReadonlyArray<PersistedSubagent>, parent: ParentContext): Effect.Effect<void>;
+  /** Number new subagents above `highest`, so ids from an earlier process are not reused. */
+  reserveIds(highest: number): Effect.Effect<void>;
   /**
    * Wait until all listed subagents are settled. Unknown ids are treated as
    * settled (the tool layer validates ids first). While waiting, settles for
@@ -126,6 +143,10 @@ export interface SubagentManagerShape {
   waitFor(ids: ReadonlyArray<string>, onPending?: (pending: string[]) => void): Effect.Effect<void>;
   /** Cancel running subagents; resolves when they have settled. */
   cancel(ids: ReadonlyArray<string>): Effect.Effect<ReadonlyArray<CancelResult>>;
+  /** Compact idle subagents concurrently; running ones are refused. */
+  compact(ids: ReadonlyArray<string>, instructions?: string): Effect.Effect<ReadonlyArray<CompactResult>>;
+  /** Stop tracking idle subagents and close their sessions; busy ones are refused. */
+  remove(ids: ReadonlyArray<string>): Effect.Effect<ReadonlyArray<RemoveResult>>;
   message(id: string, text: string): Effect.Effect<SubagentMessageResult, SendError>;
   send(id: string, text: string): Effect.Effect<void, SendError>;
   answer(id: string, text: string): Effect.Effect<SubagentQuestion, SendError>;
@@ -411,6 +432,7 @@ function spawn(state: ManagerState, spawnFn: SpawnFn, task: SpawnTask) {
           liveTools: [],
           queued: [],
           pendingQuestions: [],
+          compacting: false,
           finalText: "",
           turns: 0,
         },
@@ -471,6 +493,7 @@ function restore(
           scope,
         ).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
         const meta = yield* session.meta;
+        const contextWindow = meta.contextWindow ?? record.meta.contextWindow;
         const entry: Entry = {
           snapshot: {
             id: record.id,
@@ -483,12 +506,16 @@ function restore(
             ...(record.settledAt === undefined ? {} : { settledAt: record.settledAt }),
             ...(record.errorText === undefined ? {} : { errorText: record.errorText }),
             meta: { ...record.meta, ...meta },
-            usage: meta.contextWindow === undefined ? {} : { contextWindow: meta.contextWindow },
+            usage: {
+              ...(record.contextTokens === undefined ? {} : { tokens: record.contextTokens }),
+              ...(contextWindow === undefined ? {} : { contextWindow }),
+            },
             cost: 0,
             transcript: [],
             liveTools: [],
             queued: [],
             pendingQuestions: [],
+            compacting: false,
             finalText: record.finalText,
             turns: 0,
           },
@@ -497,8 +524,6 @@ function restore(
           liveToolMap: new Map(),
         };
         state.entries.set(record.id, entry);
-        const numericId = Number.parseInt(record.id.replace(/^sa-/, ""), 10);
-        if (Number.isFinite(numericId)) state.counter = Math.max(state.counter, numericId);
         const pump = Stream.runForEach(session.events, (event) => Effect.sync(() => foldEvent(state, entry, event)));
         entry.pump = yield* Scope.provide(Effect.forkScoped(pump), scope);
         notify(state, record.id);
@@ -592,6 +617,8 @@ function send(state: ManagerState, id: string, text: string) {
       return new SendError({
         message: `Subagent "${id}" is no longer tracked.`,
       });
+    if (entry.snapshot.compacting)
+      return new SendError({ message: `Subagent "${id}" is compacting; send again when it finishes.` });
     if (entry.snapshot.status === "running") return entry.session.send(text);
     if (runningCount(state) + state.reserved >= MAX_RUNNING)
       return new SendError({
@@ -615,6 +642,64 @@ function send(state: ManagerState, id: string, text: string) {
         }),
       ),
     );
+  });
+}
+
+/** Why a subagent cannot be compacted or removed now, if it cannot. */
+function busyReason(entry: Entry) {
+  const { snapshot } = entry;
+  if (snapshot.compacting) return "It is compacting; retry when it finishes.";
+  if (snapshot.pendingQuestions.length > 0)
+    return "It is waiting for an answer to its question; answer it with subagent_message or cancel it first.";
+  if (snapshot.status === "running" || entry.restarting)
+    return "It is still running; wait for it to settle or cancel it first.";
+  return undefined;
+}
+
+/** Pi's /compact wording for a branch with too little new context since the last compaction. */
+const NOTHING_TO_COMPACT = /^(Already compacted|Nothing to compact)/;
+
+function compactOne(state: ManagerState, id: string, instructions: string | undefined) {
+  return Effect.suspend((): Effect.Effect<CompactResult> => {
+    const entry = state.entries.get(id);
+    if (!entry || state.disposed) return Effect.succeed({ id, title: id, errorText: "It is no longer tracked." });
+    const { snapshot } = entry;
+    const refused = (errorText: string) => Effect.succeed({ id, title: snapshot.title, errorText });
+    const busy = busyReason(entry);
+    if (busy) return refused(busy);
+    snapshot.compacting = true;
+    notify(state, id);
+    return entry.session.compact(instructions).pipe(
+      Effect.map((outcome): CompactResult => {
+        if (outcome.estimatedTokensAfter !== undefined)
+          snapshot.usage = { ...snapshot.usage, tokens: outcome.estimatedTokensAfter };
+        return { id, title: snapshot.title, ...outcome };
+      }),
+      Effect.catch((error) =>
+        refused(
+          NOTHING_TO_COMPACT.test(error.message) ? "Not enough new context since the last compaction." : error.message,
+        ),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          snapshot.compacting = false;
+          notify(state, id);
+        }),
+      ),
+    );
+  });
+}
+
+function removeOne(state: ManagerState, id: string) {
+  return Effect.suspend((): Effect.Effect<RemoveResult> => {
+    const entry = state.entries.get(id);
+    if (!entry || state.disposed) return Effect.succeed({ id, title: id, errorText: "It is no longer tracked." });
+    const title = entry.snapshot.title;
+    const busy = busyReason(entry);
+    if (busy) return Effect.succeed({ id, title, errorText: busy });
+    state.entries.delete(id);
+    notify(state, id);
+    return closeEntryScope(entry).pipe(Effect.timeout(STOP_TIMEOUT_MS), Effect.ignore, Effect.as({ id, title }));
   });
 }
 
@@ -723,8 +808,18 @@ const makeManager = (spawnFn: SpawnFn, resumeFn: ResumeFn) =>
         SubagentManager.of({
           spawn: (task) => spawn(state, spawnFn, task),
           restore: (records, parent) => restore(state, resumeFn, records, parent),
+          reserveIds: (highest) =>
+            Effect.sync(() => {
+              state.counter = Math.max(state.counter, highest);
+            }),
           waitFor: (ids, onPending) => waitFor(state, ids, onPending),
           cancel: (ids) => cancel(state, ids),
+          compact: (ids, instructions) =>
+            Effect.forEach([...new Set(ids)], (id) => compactOne(state, id, instructions), {
+              concurrency: "unbounded",
+            }),
+          remove: (ids) =>
+            Effect.forEach([...new Set(ids)], (id) => removeOne(state, id), { concurrency: "unbounded" }),
           message: (id, text) => message(state, id, text),
           send: (id, text) => send(state, id, text),
           answer: (id, text) => answer(state, id, text),

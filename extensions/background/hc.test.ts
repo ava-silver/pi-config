@@ -23,7 +23,7 @@ interface FakeHc {
   stop(): void;
 }
 
-/** Scripted child: answers each send with "echo: <text>"; "ASK" asks the parent first. */
+/** Scripted child: answers each send with "echo: <text>"; "ASK" asks the parent first; compactions succeed. */
 function startChild(dir: string, sessionFile: string) {
   const paths = channelPaths(dir);
   const emit = (event: SubagentEvent) => appendLine(paths.events, event);
@@ -42,6 +42,8 @@ function startChild(dir: string, sessionFile: string) {
     } else if (value.type === "answer") {
       emit({ _tag: "QuestionClosed", questionId: value.questionId });
       settle(`answered: ${value.text}`);
+    } else if (value.type === "compact") {
+      appendLine(paths.events, { type: "compacted", id: value.id, tokensBefore: 80_000, estimatedTokensAfter: 8_000 });
     }
   });
 }
@@ -152,6 +154,33 @@ test("messaging an hc subagent whose pi exited starts it again on its session fi
   });
 });
 
+test("compacting a live hc subagent uses its terminal and does not start a run", async () => {
+  await withManager(async (manager, fake, runtime) => {
+    const snap = await runTool(runtime, manager.spawn(task("first")));
+    await runTool(runtime, manager.waitFor([snap.id]));
+
+    const [result] = await runTool(runtime, manager.compact([snap.id], "Keep the widget plan"));
+    assert.equal(result?.tokensBefore, 80_000);
+    assert.equal(manager.view.get(snap.id)?.status, "done");
+    assert.equal(fake.calls.filter(([command]) => command === "run").length, 1);
+  });
+});
+
+test("compacting an hc subagent whose pi exited starts it on its session file", async () => {
+  await withManager(async (manager, fake, runtime) => {
+    const snap = await runTool(runtime, manager.spawn(task("first")));
+    await runTool(runtime, manager.waitFor([snap.id]));
+    fake.exitAll();
+
+    const [result] = await runTool(runtime, manager.compact([snap.id]));
+    assert.equal(result?.estimatedTokensAfter, 8_000);
+    assert.equal(manager.view.get(snap.id)?.status, "done");
+    const runs = fake.calls.filter(([command]) => command === "run");
+    assert.equal(runs.length, 2);
+    assert.ok(runs[1]?.join(" ").includes("--session /tmp/child-session.jsonl"));
+  });
+});
+
 test("restored hc subagents replay their session file without starting a terminal", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hc-restore-"));
   const sessionFile = path.join(dir, "session.jsonl");
@@ -197,7 +226,8 @@ test("restored hc subagents replay their session file without starting a termina
               status: "done",
               createdAt: 1,
               finalText: "hello",
-              meta: { sessionFilePath: sessionFile },
+              contextTokens: 12_000,
+              meta: { sessionFilePath: sessionFile, contextWindow: 1_000_000 },
             },
           ],
           { parentCwd: process.cwd(), projectTrusted: true },
@@ -212,6 +242,7 @@ test("restored hc subagents replay their session file without starting a termina
         ["user", "assistant"],
       );
       assert.equal(restored?.cost, 0.5);
+      assert.deepEqual(restored?.usage, { tokens: 12_000, contextWindow: 1_000_000 });
       assert.equal(fake.calls.filter(([command]) => command === "run").length, 0);
     });
   } finally {

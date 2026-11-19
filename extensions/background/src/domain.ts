@@ -56,6 +56,8 @@ export interface PersistedSubagent {
   readonly settledAt?: number;
   readonly errorText?: string;
   readonly finalText: string;
+  /** Context occupancy when the subagent last settled, shown until its session reports a new value. */
+  readonly contextTokens?: number;
   readonly meta: SubagentMeta;
 }
 
@@ -177,12 +179,19 @@ export type SubagentEvent =
 
 // --- Session ----------------------------------------------------------------
 
+export interface CompactionOutcome {
+  readonly tokensBefore: number;
+  readonly estimatedTokensAfter?: number;
+}
+
 /** What the manager consumes from a running subagent session. */
 export interface SubagentSession {
   readonly meta: Effect<SubagentMeta>;
   readonly events: Stream<SubagentEvent>;
   send(text: string): Effect<void, SendError>;
   answer(questionId: string, text: string): Effect<void, SendError>;
+  /** Summarize an idle session's conversation; the manager never calls it during a run. */
+  compact(instructions?: string): Effect<CompactionOutcome, SendError>;
   readonly interrupt: Effect<void>;
 }
 
@@ -213,6 +222,7 @@ export interface SubagentSnapshot {
   readonly liveTools: ReadonlyArray<LiveToolState>;
   readonly queued: ReadonlyArray<QueuedMessage>;
   readonly pendingQuestions: ReadonlyArray<SubagentQuestion>;
+  readonly compacting: boolean;
   /** Final text of the most recent completed run (v1 `finalOutput`). */
   readonly finalText: string;
   /** Count of finalized assistant messages. */
