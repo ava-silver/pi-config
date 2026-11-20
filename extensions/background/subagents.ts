@@ -54,6 +54,7 @@ import {
   buildSubagentResultMessage,
   buildSubagentSpawnResult,
   buildSubagentSpawnToolDescription,
+  type ScopedModelOption,
   SUBAGENT_MESSAGE_PARAMETER_DESCRIPTIONS,
   SUBAGENT_MESSAGE_TOOL_DESCRIPTION,
   SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS,
@@ -475,14 +476,20 @@ function registerSubagentLifecycle(pi: ExtensionAPI, background: BackgroundHub, 
 
 function registerSpawnTool(pi: ExtensionAPI, controller: SubagentController) {
   pi.on("session_start", (_event, ctx) => {
-    const modelExamples = [...new Set(ctx.scopedModels.map(({ model }) => `${model.provider}/${model.id}`))].slice(
-      0,
-      8,
-    );
+    const modelOptions: ScopedModelOption[] = [
+      ...new Map(
+        ctx.scopedModels.map(({ model }) => {
+          const id = `${model.provider}/${model.id}`;
+          return [id, { id, inputCost: model.cost.input, outputCost: model.cost.output }] as const;
+        }),
+      ).values(),
+    ]
+      .toSorted((a, b) => a.inputCost + a.outputCost - (b.inputCost + b.outputCost) || a.id.localeCompare(b.id))
+      .slice(0, 12);
     pi.registerTool({
       name: "subagent_spawn",
       label: "Spawn Subagent",
-      description: buildSubagentSpawnToolDescription(modelExamples, hcBackendAvailable()),
+      description: buildSubagentSpawnToolDescription(modelOptions, hcBackendAvailable()),
       promptSnippet: SUBAGENT_SPAWN_PROMPT_SNIPPET,
       promptGuidelines: SUBAGENT_SPAWN_PROMPT_GUIDELINES,
       parameters: Type.Object({
@@ -497,18 +504,14 @@ function registerSpawnTool(pi: ExtensionAPI, controller: SubagentController) {
             description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.workingDir,
           }),
         ),
-        model: Type.Optional(
-          Type.String({
-            description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.model,
-          }),
-        ),
-        reasoning_effort: Type.Optional(
-          Type.Unsafe<ReasoningEffort>({
-            type: "string",
-            enum: [...REASONING_EFFORTS],
-            description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
-          }),
-        ),
+        model: Type.String({
+          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.model,
+        }),
+        reasoning_effort: Type.Unsafe<ReasoningEffort>({
+          type: "string",
+          enum: [...REASONING_EFFORTS],
+          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.reasoningEffort,
+        }),
       }),
       renderCall(args, theme) {
         const lines = [
@@ -525,6 +528,8 @@ function registerSpawnTool(pi: ExtensionAPI, controller: SubagentController) {
         const cwd = path.resolve(ctx.cwd, params.working_dir ?? ".");
         if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory())
           throw new Error(`working_dir is not a directory: ${cwd}`);
+        const model = params.model.trim();
+        if (!model) throw new Error("model is required.");
         const title = params.name.trim().slice(0, 160) || "subagent";
         const snap = await runTool(
           controller.getRuntime(),
@@ -532,8 +537,8 @@ function registerSpawnTool(pi: ExtensionAPI, controller: SubagentController) {
             prompt: params.prompt,
             title,
             cwd,
-            ...(params.model === undefined ? {} : { model: params.model }),
-            ...(params.reasoning_effort === undefined ? {} : { reasoningEffort: params.reasoning_effort }),
+            model,
+            reasoningEffort: params.reasoning_effort,
             parent: {
               parentCwd: ctx.cwd,
               projectTrusted: resolveStandaloneChildProjectTrust({

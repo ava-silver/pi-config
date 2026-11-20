@@ -161,7 +161,7 @@ const MODEL_SHORT: [string, string][] = [["deepseek", "ds4f"]];
 function formatModelName(id: string): string {
   const base = (id.split("/").pop()?.split("@")[0] ?? id).toLowerCase();
   if (base.includes("claude")) return base.split("-")[1] ?? base;
-  if (base.includes("gpt")) return base.split("-")[2] ?? base;
+  if (base.includes("gpt") || base.includes("gemini")) return base.split("-")[2] ?? base;
   return MODEL_SHORT.find(([needle]) => base.includes(needle))?.[1] ?? base;
 }
 

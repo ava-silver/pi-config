@@ -1,9 +1,28 @@
 /** All model-facing strings for the subagents tools. */
 
+/** Scoped model summary shown to the parent model when choosing a child model. */
+export interface ScopedModelOption {
+  readonly id: string;
+  readonly inputCost: number;
+  readonly outputCost: number;
+}
+
+function formatPrice(dollarsPerMillion: number): string {
+  if (Number.isInteger(dollarsPerMillion)) return `$${dollarsPerMillion}`;
+  return `$${dollarsPerMillion.toFixed(dollarsPerMillion < 0.1 ? 3 : 2)}`;
+}
+
+function formatScopedModelOption(option: ScopedModelOption): string {
+  if (option.inputCost <= 0 && option.outputCost <= 0) return `"${option.id}"`;
+  return `"${option.id}" (${formatPrice(option.inputCost)}/${formatPrice(option.outputCost)})`;
+}
+
 /** Describes subagent_spawn, including models curated for the parent session. */
-export function buildSubagentSpawnToolDescription(modelExamples: readonly string[], inHerdr: boolean) {
+export function buildSubagentSpawnToolDescription(modelOptions: readonly ScopedModelOption[], inHerdr: boolean) {
   const scopedModels =
-    modelExamples.length > 0 ? ` Scoped model examples: ${modelExamples.map((model) => `"${model}"`).join(", ")}.` : "";
+    modelOptions.length > 0
+      ? ` Scoped models (cheapest first, $/1M in/out): ${modelOptions.map(formatScopedModelOption).join(", ")}.`
+      : "";
   const kind = inHerdr
     ? "an interactive pi agent in its own Herdr terminal, which the user can watch and talk to directly, with its own context window"
     : "a headless pi agent with its own context window";
@@ -35,9 +54,9 @@ export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
   name: 'Descriptive 2-5 word name in sentence case that says what the subagent does, like "Fix env var types" or "Review auth middleware". Avoid bare ticket numbers and abbreviations. Shown in listings and the terminal UI.',
   workingDir: "Working directory (default: current working directory)",
   model:
-    '"provider/model-id" or bare model id. Omit to inherit the current model; pick another only when the task clearly needs it (for example, a stronger model for hard reasoning).',
+    '"provider/model-id" or bare model id. Pick the lightest model that fits the task instead of reflexively cloning the parent: low-cost/flash models work well for lookups, CI watching, and mechanical edits; mid-tier models for general coding and review; top-tier models for ambiguous design or hard debugging.',
   reasoningEffort:
-    "Reasoning effort (pi thinking level). Omit to inherit the current level; lower it for routine work, raise it for ambiguous or high-risk work.",
+    "Reasoning effort (pi thinking level). Match the task: low or medium for lookups and routine work, high for coding and review, xhigh/max when deeper reasoning is worth the cost.",
 };
 
 /** Builds the subagent_spawn result that tells the parent model how to continue or inspect the child. */
