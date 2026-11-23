@@ -18,15 +18,15 @@ function formatScopedModelOption(option: ScopedModelOption): string {
 }
 
 /** Describes subagent_spawn, including models curated for the parent session. */
-export function buildSubagentSpawnToolDescription(modelOptions: readonly ScopedModelOption[], inHerdr: boolean) {
+export function buildSubagentSpawnToolDescription(modelOptions: readonly ScopedModelOption[], interactive: boolean) {
   const scopedModels =
     modelOptions.length > 0
       ? ` Scoped models (cheapest first, $/1M in/out): ${modelOptions.map(formatScopedModelOption).join(", ")}.`
       : "";
-  const kind = inHerdr
-    ? "an interactive pi agent in its own Herdr terminal, which the user can watch and talk to directly, with its own context window"
+  const kind = interactive
+    ? "an interactive pi agent in its own terminal, which the user can open and talk to directly, with its own context window"
     : "a headless pi agent with its own context window";
-  const limits = inHerdr
+  const limits = interactive
     ? "Children cannot orchestrate more agents and cannot see this conversation."
     : "Children cannot orchestrate more agents or ask the user directly, and cannot see this conversation.";
   return (

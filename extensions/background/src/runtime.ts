@@ -8,10 +8,16 @@
 
 import { Cause, Exit, ManagedRuntime, type Effect } from "effect";
 import { hcBackendAvailable } from "./backends/hc.ts";
-import { SubagentManagerHc, SubagentManagerLive } from "./manager.ts";
+import { rexBackendAvailable } from "./backends/rex.ts";
+import { SubagentManagerHc, SubagentManagerLive, SubagentManagerRex } from "./manager.ts";
+
+/** Subagents are interactive pi terminals when the parent runs in Herdr or Rex. */
+export const terminalBackendAvailable = () => hcBackendAvailable() || rexBackendAvailable();
 
 export function createSubagentRuntime() {
-  return ManagedRuntime.make(hcBackendAvailable() ? SubagentManagerHc : SubagentManagerLive);
+  return ManagedRuntime.make(
+    hcBackendAvailable() ? SubagentManagerHc : rexBackendAvailable() ? SubagentManagerRex : SubagentManagerLive,
+  );
 }
 
 export type SubagentRuntime = ReturnType<typeof createSubagentRuntime>;

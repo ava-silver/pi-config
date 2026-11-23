@@ -193,6 +193,8 @@ export interface SubagentSession {
   /** Summarize an idle session's conversation; the manager never calls it during a run. */
   compact(instructions?: string): Effect<CompactionOutcome, SendError>;
   readonly interrupt: Effect<void>;
+  /** Show the subagent's own terminal to the user, starting it again if its pi exited. Absent for headless sessions. */
+  readonly open?: Effect<void, SendError>;
 }
 
 // --- Snapshot ---------------------------------------------------------------

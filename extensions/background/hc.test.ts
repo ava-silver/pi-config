@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { ManagedRuntime } from "effect";
-import { type HcRunner, makeHcBackend } from "./src/backends/hc.ts";
+import { type HcRunner, hcHost, makeHcBackend, makeTerminalBackend } from "./src/backends/hc.ts";
 import { appendLine, CHANNEL_ENV, channelPaths, isParentCommand, tailJsonl } from "./src/channel.ts";
 import type { SpawnTask, SubagentEvent } from "./src/domain.ts";
 import { makeSubagentManagerLayer, SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
@@ -152,6 +152,29 @@ test("messaging an hc subagent whose pi exited starts it again on its session fi
     assert.equal(runs.length, 2);
     assert.ok(runs[1]?.join(" ").includes("--session /tmp/child-session.jsonl"));
   });
+});
+
+test("opening a subagent whose pi exited starts it again before showing its terminal", async () => {
+  const fake = fakeHc();
+  const opened: string[] = [];
+  const backend = makeTerminalBackend({
+    host: { ...hcHost(fake.hc), open: async (address) => void opened.push(address) },
+    piCommand: ["pi"],
+  });
+  const runtime = ManagedRuntime.make(makeSubagentManagerLayer(backend.spawn, backend.resume));
+  try {
+    const manager = await runtime.runPromise(SubagentManager);
+    const snap = await runTool(runtime, manager.spawn(task("first")));
+    await runTool(runtime, manager.waitFor([snap.id]));
+    fake.exitAll();
+
+    assert.equal(await runTool(runtime, manager.open(snap.id)), true);
+    assert.deepEqual(opened, ["t2"]);
+    assert.equal(manager.view.get(snap.id)?.status, "done");
+  } finally {
+    await runtime.dispose();
+    fake.stop();
+  }
 });
 
 test("compacting a live hc subagent uses its terminal and does not start a run", async () => {

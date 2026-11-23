@@ -26,7 +26,8 @@ import type {
   SubagentStatus,
   TranscriptItem,
 } from "./domain.ts";
-import { execHc, makeHcBackend } from "./backends/hc.ts";
+import { execHc, makeHcBackend, makeTerminalBackend } from "./backends/hc.ts";
+import { execRex, rexHost } from "./backends/rex.ts";
 import { resumePiSession, spawnPiSession } from "./backends/pi.ts";
 import { ConcurrencyLimitError, SendError, SpawnError } from "./domain.ts";
 
@@ -150,6 +151,8 @@ export interface SubagentManagerShape {
   message(id: string, text: string): Effect.Effect<SubagentMessageResult, SendError>;
   send(id: string, text: string): Effect.Effect<void, SendError>;
   answer(id: string, text: string): Effect.Effect<SubagentQuestion, SendError>;
+  /** Show a subagent's terminal to the user. False for headless subagents, which have none. */
+  open(id: string): Effect.Effect<boolean, SendError>;
   get(id: string): Effect.Effect<SubagentSnapshot | undefined>;
   readonly list: Effect.Effect<ReadonlyArray<SubagentSnapshot>>;
   readonly disposeAll: Effect.Effect<void>;
@@ -823,6 +826,7 @@ const makeManager = (spawnFn: SpawnFn, resumeFn: ResumeFn) =>
           message: (id, text) => message(state, id, text),
           send: (id, text) => send(state, id, text),
           answer: (id, text) => answer(state, id, text),
+          open: (id) => state.entries.get(id)?.session.open?.pipe(Effect.as(true)) ?? Effect.succeed(false),
           get: (id) => Effect.sync(() => state.entries.get(id)?.snapshot),
           list: Effect.sync(() => [...state.entries.values()].map((entry) => entry.snapshot)),
           disposeAll: dispose,
@@ -843,3 +847,9 @@ export const SubagentManagerLive = makeSubagentManagerLayer(spawnPiSession, resu
 
 const hcBackend = makeHcBackend({ hc: execHc, piCommand: [process.execPath] });
 export const SubagentManagerHc = makeSubagentManagerLayer(hcBackend.spawn, hcBackend.resume);
+
+const rexBackend = makeTerminalBackend({
+  host: rexHost(execRex, process.env.REX_SESSION ?? ""),
+  piCommand: [process.execPath],
+});
+export const SubagentManagerRex = makeSubagentManagerLayer(rexBackend.spawn, rexBackend.resume);

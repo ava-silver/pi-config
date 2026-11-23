@@ -28,8 +28,8 @@ export interface BackgroundProvider {
   list(): BackgroundItem[];
   /** Subscribe to any change. Returns an unsubscribe function. */
   subscribe(onChange: () => void): () => void;
-  /** Open the provider-specific detail view for an item. */
-  openDetail(id: string, ctx: ExtensionContext): Promise<void>;
+  /** Open the provider-specific detail view for an item. Resolves "close" to dismiss the picker instead of returning to it. */
+  openDetail(id: string, ctx: ExtensionContext): Promise<void | "close">;
   /** Optional: kill a running item (triggered by 'x' in the picker). */
   kill?(id: string): void;
 }
@@ -92,7 +92,7 @@ export class BackgroundHub {
       if (!provider) continue;
       if (!provider.list().find((item) => item.id === picked.itemId)) continue;
 
-      await provider.openDetail(picked.itemId, ctx);
+      if ((await provider.openDetail(picked.itemId, ctx)) === "close") return;
     }
   }
 }

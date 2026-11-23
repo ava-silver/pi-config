@@ -1,7 +1,8 @@
 /**
  * Subagents -- spawn background pi subagents, each with its own context
  * window: a headless in-process agent session, or, when this pi runs in a
- * herdr-core terminal, an interactive pi in its own terminal (src/backends/hc.ts).
+ * herdr-core or Rex terminal, an interactive pi in its own terminal
+ * (src/backends/hc.ts, src/backends/rex.ts).
  *
  * Tools (for the parent LLM):
  * - subagent_spawn: start work in the background and return an id immediately
@@ -44,7 +45,6 @@ import {
 } from "./src/domain.ts";
 import { COMPACT_ROW } from "../shared/compact-row.ts";
 import { formatCompactTokens, formatContextUtilization } from "../shared/context-utilization.ts";
-import { hcBackendAvailable } from "./src/backends/hc.ts";
 import { processIsRunning } from "./src/channel.ts";
 import { registerBackgroundCost, registerTransientSegment } from "../shared/footer-segments.ts";
 import { resolveStandaloneChildProjectTrust } from "../shared/child-session.ts";
@@ -71,7 +71,7 @@ import {
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
 import { createDeferredResultDelivery } from "./src/result-delivery.ts";
-import { createSubagentRuntime, runTool, type SubagentRuntime } from "./src/runtime.ts";
+import { createSubagentRuntime, runTool, type SubagentRuntime, terminalBackendAvailable } from "./src/runtime.ts";
 import { openTakeoverView } from "./src/ui/takeover.ts";
 import type { BackgroundHub } from "./src/hub.ts";
 
@@ -457,6 +457,11 @@ function registerSubagentLifecycle(pi: ExtensionAPI, background: BackgroundHub, 
       },
       async openDetail(id, viewContext) {
         const manager = await controller.getManager();
+        const opened = await runTool(controller.getRuntime(), manager.open(id)).catch((error: Error) => {
+          viewContext.ui.notify(error.message, "error");
+          return true;
+        });
+        if (opened) return "close";
         await openTakeoverView(id, viewContext, manager.view);
       },
       kill(id) {
@@ -489,7 +494,7 @@ function registerSpawnTool(pi: ExtensionAPI, controller: SubagentController) {
     pi.registerTool({
       name: "subagent_spawn",
       label: "Spawn Subagent",
-      description: buildSubagentSpawnToolDescription(modelOptions, hcBackendAvailable()),
+      description: buildSubagentSpawnToolDescription(modelOptions, terminalBackendAvailable()),
       promptSnippet: SUBAGENT_SPAWN_PROMPT_SNIPPET,
       promptGuidelines: SUBAGENT_SPAWN_PROMPT_GUIDELINES,
       parameters: Type.Object({

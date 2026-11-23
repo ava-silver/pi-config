@@ -1,8 +1,8 @@
 /**
- * hc backend: each subagent is an interactive pi in its own herdr-core
- * terminal, started from the parent's terminal so Herdr lists it under the
- * parent. The child reports over a file channel (see ../channel.ts and
- * ../child.ts); hc only starts, checks, and stops the terminal.
+ * Terminal backend: each subagent is an interactive pi in its own terminal,
+ * hosted by herdr-core (`hc`, below) or Rex (./rex.ts). The child reports over
+ * a file channel (see ../channel.ts and ../child.ts); the host only starts,
+ * checks, and stops the terminal.
  *
  * - spawn writes the prompt to the inbox, then starts the terminal;
  * - send/answer/interrupt/compact append commands to the inbox;
@@ -43,8 +43,26 @@ const COMPACT_TIMEOUT_MS = 10 * 60_000;
 /** Runs `hc` with arguments and resolves with its stdout. */
 export type HcRunner = (args: ReadonlyArray<string>) => Promise<string>;
 
-export interface HcBackendOptions {
-  readonly hc: HcRunner;
+/** What a terminal needs to start: a program with extra environment, in a directory. */
+export interface TerminalSpec {
+  readonly title: string;
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly command: ReadonlyArray<string>;
+}
+
+/** Where subagent terminals live. An address names one terminal for its lifetime. */
+export interface TerminalHost {
+  start(spec: TerminalSpec): Promise<string>;
+  isLive(address: string): Promise<boolean>;
+  /** Ends the terminal and removes it. */
+  stop(address: string): Promise<void>;
+  /** Shows the terminal to the user. */
+  open?(address: string, title: string): Promise<void>;
+}
+
+export interface TerminalBackendOptions {
+  readonly host: TerminalHost;
   /** Command that starts pi, before its arguments. */
   readonly piCommand: ReadonlyArray<string>;
 }
@@ -82,12 +100,46 @@ function parseAddress(stdout: string) {
   return address;
 }
 
-async function isLive(hc: HcRunner, address: string) {
-  try {
-    return (JSON.parse(await hc(["get", address, "--json"])) as { state?: unknown }).state === "live";
-  } catch {
-    return false;
-  }
+/** Terminals started from the parent's terminal, so Herdr lists them under the parent. */
+export function hcHost(hc: HcRunner): TerminalHost {
+  return {
+    start: async ({ title, cwd, env, command }) => {
+      const run = (unique: boolean) =>
+        hc([
+          "run",
+          "--bg",
+          "--json",
+          // Exits are detected over the channel; hc notes would be typed into the
+          // parent's prompt, or into its shell once the parent pi has exited.
+          "--no-notify",
+          "--name",
+          terminalName(title, unique),
+          "--cwd",
+          cwd,
+          "--",
+          "env",
+          ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
+          ...command,
+        ]);
+      return parseAddress(
+        await run(false).catch((error: { kind?: string }) => {
+          if (error.kind === "name_taken") return run(true);
+          throw error;
+        }),
+      );
+    },
+    isLive: async (address) => {
+      try {
+        return (JSON.parse(await hc(["get", address, "--json"])) as { state?: unknown }).state === "live";
+      } catch {
+        return false;
+      }
+    },
+    stop: async (address) => {
+      await hc(["kill", address]).catch(() => undefined);
+      await hc(["rm", address]).catch(() => undefined);
+    },
+  };
 }
 
 interface HcState {
@@ -103,13 +155,13 @@ interface HcState {
   compactions: Map<string, (reply: CompactionReply) => void>;
 }
 
-const makeHcSession = (
-  options: HcBackendOptions,
+const makeTerminalSession = (
+  options: TerminalBackendOptions,
   task: SpawnTask,
   sessionFilePath?: string,
 ): Effect.Effect<SubagentSession, SpawnError, Scope.Scope> =>
   Effect.gen(function* () {
-    const { hc } = options;
+    const { host } = options;
     const model = yield* Effect.try({
       try: () =>
         sessionFilePath || !task.parent.modelRegistry
@@ -187,32 +239,14 @@ const makeHcSession = (
             ]),
         task.parent.projectTrusted ? "--approve" : "--no-approve",
       ];
-      const run = (unique: boolean) =>
-        hc([
-          "run",
-          "--bg",
-          "--json",
-          // Exits are detected over the channel; hc notes would be typed into the
-          // parent's prompt, or into its shell once the parent pi has exited.
-          "--no-notify",
-          "--name",
-          terminalName(task.title, unique),
-          "--cwd",
-          task.cwd,
-          "--",
-          "env",
-          `${CHANNEL_ENV}=${dir}`,
-          ...options.piCommand,
-          ...piArgs,
-        ]);
       state.active = first.type === "send";
       try {
-        state.address = parseAddress(
-          await run(false).catch((error: { kind?: string }) => {
-            if (error.kind === "name_taken") return run(true);
-            throw error;
-          }),
-        );
+        state.address = await host.start({
+          title: task.title,
+          cwd: task.cwd,
+          env: { [CHANNEL_ENV]: dir },
+          command: [...options.piCommand, ...piArgs],
+        });
       } catch (error) {
         state.active = false;
         removeChannel();
@@ -223,7 +257,7 @@ const makeHcSession = (
     const liveness = setInterval(() => {
       const address = state.address;
       if (!address || !state.active) return;
-      void isLive(hc, address).then((live) => {
+      void host.isLive(address).then((live) => {
         if (!live && state.address === address) exited();
       });
     }, LIVENESS_MS);
@@ -237,10 +271,7 @@ const makeHcSession = (
         for (const [id, resolve] of state.compactions)
           resolve({ type: "compacted", id, errorText: "Subagent session is closed." });
         removeChannel();
-        if (address) {
-          await hc(["kill", address]).catch(() => undefined);
-          await hc(["rm", address]).catch(() => undefined);
-        }
+        if (address) await host.stop(address);
         Queue.endUnsafe(events);
       }),
     );
@@ -269,7 +300,7 @@ const makeHcSession = (
         Effect.tryPromise({
           try: async () => {
             if (state.closed) throw new Error("Subagent session is closed.");
-            if (state.address && (state.active || (await isLive(hc, state.address)))) {
+            if (state.address && (state.active || (await host.isLive(state.address)))) {
               state.active = true;
               command({ type: "send", text });
               return;
@@ -298,7 +329,7 @@ const makeHcSession = (
               ...(instructions === undefined ? {} : { instructions }),
             };
             try {
-              if (state.address && (await isLive(hc, state.address))) command(value);
+              if (state.address && (await host.isLive(state.address))) command(value);
               else if (state.sessionFile) await launch(value);
               else throw new Error("The subagent's session file is unknown.");
               const reply = await replied;
@@ -324,7 +355,7 @@ const makeHcSession = (
         }),
       interrupt: Effect.promise(async () => {
         if (!state.active || state.closed) return;
-        if (!state.address || !(await isLive(hc, state.address))) return exited();
+        if (!state.address || !(await host.isLive(state.address))) return exited();
         const settled = new Promise<void>((resolve) => {
           state.settleWaiters.push(resolve);
           setTimeout(resolve, INTERRUPT_WAIT_MS);
@@ -332,14 +363,34 @@ const makeHcSession = (
         command({ type: "interrupt" });
         await settled;
       }),
+      ...(host.open === undefined
+        ? {}
+        : {
+            open: Effect.tryPromise({
+              try: async () => {
+                if (state.closed) throw new Error("Subagent session is closed.");
+                if (!state.address || !(await host.isLive(state.address))) {
+                  if (!state.sessionFile) throw new Error("The subagent's session file is unknown.");
+                  // An interrupt with no run to stop starts the pi without giving it work.
+                  await launch({ type: "interrupt" });
+                }
+                if (state.address) await host.open?.(state.address, task.title);
+              },
+              catch: toSendError,
+            }),
+          }),
     } satisfies SubagentSession;
   });
 
-export function makeHcBackend(options: HcBackendOptions) {
+export function makeTerminalBackend(options: TerminalBackendOptions) {
   return {
-    spawn: (task: SpawnTask) => makeHcSession(options, task),
-    resume: (task: SpawnTask, sessionFilePath: string) => makeHcSession(options, task, sessionFilePath),
+    spawn: (task: SpawnTask) => makeTerminalSession(options, task),
+    resume: (task: SpawnTask, sessionFilePath: string) => makeTerminalSession(options, task, sessionFilePath),
   };
+}
+
+export function makeHcBackend(options: { readonly hc: HcRunner; readonly piCommand: ReadonlyArray<string> }) {
+  return makeTerminalBackend({ host: hcHost(options.hc), piCommand: options.piCommand });
 }
 
 /** Subagents run in herdr-core terminals when the parent runs in one. */
