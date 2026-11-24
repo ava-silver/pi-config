@@ -15,6 +15,9 @@ const SHELL = "com.superlogical.terminal.shell";
 /** Block labels start with this so `send_back` detaches only subagents. Keep in sync with rex/init.lua. */
 export const SUBAGENT_LABEL_PREFIX = "sub: ";
 
+/** Subagent tabs carry this prefix, so they read as children of the tab above them. */
+export const SUBAGENT_TAB_PREFIX = "╰─ ";
+
 /** Runs `rex` with arguments and resolves with its stdout. */
 export type RexRunner = (args: ReadonlyArray<string>) => Promise<string>;
 
@@ -33,7 +36,7 @@ interface BlockInfo {
   readonly window_id?: string;
 }
 
-export function rexHost(rex: RexRunner, sessionId: string): TerminalHost {
+export function rexHost(rex: RexRunner, sessionId: string, parentBlockId = process.env.REX_BLOCK): TerminalHost {
   const call = async <T>(method: string, args: Readonly<Record<string, unknown>>) =>
     JSON.parse(await rex(["api", "call", "-s", sessionId, method, JSON.stringify(args)])) as T;
 
@@ -62,6 +65,21 @@ export function rexHost(rex: RexRunner, sessionId: string): TerminalHost {
         ]).catch(() => undefined),
       ),
     );
+
+  // Puts the subagent's tab after its parent's tab and the subagent tabs already there.
+  const placeBelowParent = async (windowId: string | undefined) => {
+    const parentWindowId = (await findBlock(parentBlockId ?? ""))?.window_id;
+    if (!windowId || !parentWindowId || parentWindowId === windowId) return;
+    const { windows = [] } = await call<{ windows?: ReadonlyArray<{ window_id: string; label: string }> }>(
+      "session.view",
+      {},
+    );
+    const others = windows.filter((window) => window.window_id !== windowId);
+    const parentIndex = others.findIndex((window) => window.window_id === parentWindowId);
+    if (parentIndex < 0) return;
+    const next = others.slice(parentIndex + 1).find((window) => !window.label.startsWith(SUBAGENT_TAB_PREFIX));
+    await call("session.move_window", { window_id: windowId, before_window_id: next?.window_id ?? null });
+  };
 
   return {
     start: async ({ title, cwd, env, command }) => {
@@ -95,13 +113,14 @@ export function rexHost(rex: RexRunner, sessionId: string): TerminalHost {
       if (block.placement === "detached") {
         // A window needs a block of its own, so the child joins a placeholder's window and the placeholder closes.
         const window = await call<{ window_id?: string; block_ids?: ReadonlyArray<string> }>("session.new_window", {
-          window_label: title.slice(0, 128),
+          window_label: `${SUBAGENT_TAB_PREFIX}${title}`.slice(0, 128),
           layout: { block: { flavor: SHELL, label: "opening" } },
         });
         placeholder = window.block_ids?.[0];
         if (!placeholder) throw new Error("rex new_window returned no block");
         await call("session.move_block", { block_id: address, anchor_block_id: placeholder });
         windowId = window.window_id;
+        await placeBelowParent(windowId).catch(() => undefined);
       }
       await Promise.all([call("session.focus_block", { block_id: address }), showWindow(await clients, windowId)]);
       if (placeholder) await rex(["block", "close", "-s", sessionId, placeholder]);
