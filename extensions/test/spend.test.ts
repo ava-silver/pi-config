@@ -8,7 +8,6 @@ import {
   asRecord,
   createSpendStore,
   graphHtml,
-  mapBounded,
   parseLedger,
   parseLedgerRecord,
   parseStableSession,
@@ -243,18 +242,4 @@ test("spend accepts malformed interior lines when the final record is complete",
   );
   const parsed = await parseStableSession(file);
   assert.equal(parsed?.records.length, 1);
-});
-
-test("spend bounds concurrent imports", async () => {
-  let active = 0;
-  let maximum = 0;
-  const result = await mapBounded([1, 2, 3, 4, 5], 2, async (value) => {
-    active++;
-    maximum = Math.max(maximum, active);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    active--;
-    return value * 2;
-  });
-  assert.deepEqual(result, [2, 4, 6, 8, 10]);
-  assert.equal(maximum, 2);
 });

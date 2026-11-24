@@ -9,6 +9,7 @@
  */
 
 import type { EventBus } from "@earendil-works/pi-coding-agent";
+import { isRecord } from "./guards.ts";
 
 export type TransientSegment = {
   /** Visible text — plain, no ANSI codes. Padded with spaces by the renderer. */
@@ -40,8 +41,6 @@ export interface FooterSegmentStore {
   backgroundCost(key: string): number;
   dispose(): void;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
 const isSegment = (value: unknown): value is TransientSegment =>
   isRecord(value) && typeof value.text === "string" && typeof value.bg === "string" && typeof value.fg === "string";

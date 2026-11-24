@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isRecord } from "./shared/guards.ts";
 
 const CACHE_FILE = "repository-context.json";
 const GITLAB_HOST = "gitlab.ddbuild.io";
@@ -35,10 +36,6 @@ export interface ParsedRemote {
 }
 
 const emptyCache = (): RepositoryCache => ({});
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isCiLocation(value: unknown): value is CiLocation {
   return (

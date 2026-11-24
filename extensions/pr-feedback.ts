@@ -7,6 +7,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { mapWithConcurrency } from "./shared/concurrency.ts";
 import { registerTransientSegment } from "./shared/footer-segments.ts";
 
 function buildPrompt(repo: string, pr: string, feedback: Feedback): string {
@@ -103,24 +104,6 @@ export async function paginateConnection<T>(
     nodes.push(...page.nodes);
   }
   return nodes;
-}
-
-export async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  maxConcurrency: number,
-  map: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-  results.length = items.length;
-  let nextIndex = 0;
-  const worker = async (): Promise<void> => {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      results[index] = await map(items[index]!, index);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(maxConcurrency, items.length) }, worker));
-  return results;
 }
 
 export function resolvedCommentIds(threads: Array<{ isResolved: boolean; comments: number[] }>): Set<number> {

@@ -5,7 +5,7 @@ import test from "node:test";
 import { type RexRunner, rexHost } from "./src/backends/rex.ts";
 
 function fakeRex() {
-  const blocks = new Map<string, { placement: "placed" | "detached"; label: string; window_id?: string }>();
+  const blocks = new Map<string, { placement: "placed" | "detached"; label: string; window_id?: string | undefined }>();
   const windows = [
     { window_id: "parent", label: "work" },
     { window_id: "other", label: "other" },

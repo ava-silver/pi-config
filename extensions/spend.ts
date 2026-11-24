@@ -3,6 +3,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { mapWithConcurrency } from "./shared/concurrency.ts";
+import { openReport } from "./shared/html-report.ts";
 
 const CACHE_DIR = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pi");
 const LEGACY_LEDGER_FILES = [join(CACHE_DIR, "spend-v1.jsonl"), join(CACHE_DIR, "spend-v2.jsonl")];
@@ -94,7 +96,7 @@ async function sessionFiles(root: string, concurrency: number): Promise<string[]
   const files: string[] = [];
   let directories = [root];
   while (directories.length > 0) {
-    const entries = await mapBounded(directories, concurrency, async (directory) => {
+    const entries = await mapWithConcurrency(directories, concurrency, async (directory) => {
       try {
         return { directory, entries: await readdir(directory, { withFileTypes: true }) };
       } catch {
@@ -184,20 +186,6 @@ export async function parseStableSession(
       // Deleted files and concurrent replacements are retried or ignored.
     }
   }
-}
-
-export async function mapBounded<T, R>(items: T[], limit: number, map: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = [];
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const index = next++;
-        results[index] = await map(items[index]!);
-      }
-    }),
-  );
-  return results;
 }
 
 function parseIndex(text: string): SessionIndex | undefined {
@@ -631,7 +619,7 @@ export function createSpendStore({
   async function importChangedSessions(): Promise<void> {
     await loadLedger();
     const files = await sessionFiles(sessionsDir, concurrency);
-    const metadata = await mapBounded(files, concurrency, async (file) => {
+    const metadata = await mapWithConcurrency(files, concurrency, async (file) => {
       try {
         return [file, await fileMetadata(file)] as const;
       } catch {
@@ -652,7 +640,7 @@ export function createSpendStore({
     const changed = files.filter(
       (file) => current[file] && !sameMetadata(previous[file] || { size: -1, mtimeMs: -1 }, current[file]),
     );
-    const parsed = await mapBounded(changed, concurrency, (file) => parseStableSession(file));
+    const parsed = await mapWithConcurrency(changed, concurrency, (file) => parseStableSession(file));
     await save(parsed.flatMap((result) => result?.records || []));
     index = {
       ...Object.fromEntries(Object.entries(previous).filter(([file]) => fileSet.has(file))),
@@ -738,12 +726,8 @@ export default function spendExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      await mkdir(CACHE_DIR, { recursive: true });
-      await writeFile(GRAPH_FILE, graphHtml(records));
-      const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-      const commandArgs = process.platform === "win32" ? ["/c", "start", "", GRAPH_FILE] : [GRAPH_FILE];
-      const result = await pi.exec(command, commandArgs, { timeout: 5_000 });
-      if (result.code !== 0) ctx.ui.notify(`Could not open ${GRAPH_FILE}`, "error");
+      if (!(await openReport(pi, GRAPH_FILE, graphHtml(records))))
+        ctx.ui.notify(`Could not open ${GRAPH_FILE}`, "error");
     },
   });
 }

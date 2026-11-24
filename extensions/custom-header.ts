@@ -11,6 +11,7 @@ import { getAgentDir, VERSION, type ExtensionAPI, type Theme, type ThemeColor } 
 import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { isRecord } from "./shared/guards.ts";
 
 // ─── Vendored: header-color ───────────────────────────────────────────────────
 
@@ -201,10 +202,6 @@ const DEFAULT_HEADER_COLORS = {
 const EMPTY_STARTUP_HEADER_CONFIG: StartupHeaderConfig = {};
 const CONFIGURATION_WARNING = "Failed to load pi-startup-header configuration. Using default colors.";
 const CONFIG_FILE_NAME = "pi-startup-header.json";
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 function expectRecord(v: unknown, path: string): Record<string, unknown> {
   if (!isRecord(v)) throw new Error(`${path} must be an object`);

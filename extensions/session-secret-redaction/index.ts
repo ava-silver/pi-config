@@ -1,6 +1,7 @@
 import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { mapWithConcurrency } from "../shared/concurrency.ts";
 import { registerTransientSegment } from "../shared/footer-segments.ts";
 
 type Finding = {
@@ -91,25 +92,6 @@ function redact(content: string, findings: Finding[]): string {
     if (line) JSON.parse(line);
   }
   return redacted;
-}
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  maxConcurrency: number,
-  map: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-  let nextIndex = 0;
-
-  async function worker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      results[index] = await map(items[index]!);
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(maxConcurrency, items.length) }, worker));
-  return results;
 }
 
 async function ensureKingfisher(pi: ExtensionAPI): Promise<void> {

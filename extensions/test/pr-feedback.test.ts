@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  GH_TIMEOUT_MS,
-  ghTimeout,
-  graphqlArgs,
-  mapWithConcurrency,
-  paginateConnection,
-  resolvedCommentIds,
-} from "../pr-feedback.ts";
+import { GH_TIMEOUT_MS, ghTimeout, graphqlArgs, paginateConnection, resolvedCommentIds } from "../pr-feedback.ts";
 
 test("paginateConnection collects every cursor page", async () => {
   const cursors: Array<string | null> = [];
@@ -20,22 +13,6 @@ test("paginateConnection collects every cursor page", async () => {
 
   assert.deepEqual(nodes, [1, 2, 3, 4]);
   assert.deepEqual(cursors, [null, "first", "second"]);
-});
-
-test("mapWithConcurrency caps concurrency and preserves order", async () => {
-  let active = 0;
-  let maxActive = 0;
-  const items = [0, 1, 2, 3, 4, 5, 6, 7];
-  const results = await mapWithConcurrency(items, 4, async (item) => {
-    active++;
-    maxActive = Math.max(maxActive, active);
-    await new Promise((resolve) => setTimeout(resolve, (items.length - item) * 2));
-    active--;
-    return item;
-  });
-
-  assert.equal(maxActive, 4);
-  assert.deepEqual(results, items);
 });
 
 test("gh limits normal calls and reserves a longer limit for pagination", () => {

@@ -3,6 +3,7 @@ import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agen
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { escapeHtml, openReport } from "./shared/html-report.ts";
 
 const CACHE_DIR = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pi");
 const REPORT_FILE = join(CACHE_DIR, "model-audit.html");
@@ -125,15 +126,6 @@ export function groupByFamily(models: AuditedModel[]) {
 }
 
 // --- HTML report ---------------------------------------------------------------
-
-function escapeHtml(value: unknown): string {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
 
 function price(value: number): string {
   if (value === 0) return "$0";
@@ -387,13 +379,10 @@ export default function modelAuditExtension(pi: ExtensionAPI): void {
         cachedCount: cached.size,
         models: results,
       });
-      await writeFile(REPORT_FILE, html, { mode: 0o600 });
-      const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-      const commandArgs = process.platform === "win32" ? ["/c", "start", "", REPORT_FILE] : [REPORT_FILE];
-      const open = await pi.exec(command, commandArgs, { timeout: 5_000 });
+      const opened = await openReport(pi, REPORT_FILE, html);
       const working = results.filter((model) => model.ok).length;
       ctx.ui.notify(
-        `Model audit: ${working}/${results.length} models working${open.code === 0 ? "" : ` -- report at ${REPORT_FILE}`}`,
+        `Model audit: ${working}/${results.length} models working${opened ? "" : ` -- report at ${REPORT_FILE}`}`,
       );
     },
   });

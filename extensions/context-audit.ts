@@ -5,9 +5,9 @@ import {
   type ExtensionAPI,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { escapeHtml, openReport } from "./shared/html-report.ts";
 
 const REPORT_FILE = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pi", "context-audit.html");
 
@@ -41,15 +41,6 @@ function tokens(value: unknown): number {
 
 function count(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
-}
-
-function escapeHtml(value: unknown): string {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 function details(summary: string, content: unknown, metadata = ""): string {
@@ -333,12 +324,7 @@ export default function contextAuditExtension(pi: ExtensionAPI): void {
         contextEntries: ctx.sessionManager.buildContextEntries(),
         ...(lastProviderRequest === undefined ? {} : { lastProviderRequest }),
       });
-      await mkdir(dirname(REPORT_FILE), { recursive: true });
-      await writeFile(REPORT_FILE, html, { mode: 0o600 });
-      const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-      const commandArgs = process.platform === "win32" ? ["/c", "start", "", REPORT_FILE] : [REPORT_FILE];
-      const result = await pi.exec(command, commandArgs, { timeout: 5_000 });
-      if (result.code !== 0) ctx.ui.notify(`Could not open ${REPORT_FILE}`, "error");
+      if (!(await openReport(pi, REPORT_FILE, html))) ctx.ui.notify(`Could not open ${REPORT_FILE}`, "error");
     },
   });
 }
