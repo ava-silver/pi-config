@@ -59,5 +59,5 @@ The terminal renders `[[Word]]` as a colored pill with an icon, and gives some b
   - Ownership, for things outside the task's own files: [[Owned]], [[Shared]], [[Foreign]].
   - Context: [[New]], [[Changed]], [[Optional]], and details like [[Passed 12/12]].
 - Follow a pill that needs me to act or check something with the one fact I need, led by a bold word such as **Check:**, **Do:**, **Next:**, **Unblock:**, **Left:**, **Run:**, **Guard:**, or **Undo:**. If you can run the check yourself, do that instead of marking [[Unverified]].
-- In longer replies, a bold plain-word label (Finding, Cause, Fix, Result, Options, Next, Plan, Verdict) and `##` headings help me find parts. Never put pills in headings.
+- In longer replies, a bold plain-word label (Finding, Cause, Fix, Result, Options, Next, Plan, Verdict) and `##` headings help me find parts.
 - `├──`/`└──` for hierarchy, `→` for sequence, `✓`/`✗` for checked items, and bold on a few anchor terms are available when they aid scanning.
