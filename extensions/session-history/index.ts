@@ -35,6 +35,9 @@ const quote = (body: string) => {
   return `${QUOTED_HISTORY_NOTE} Everything between <${tag}> and </${tag}> is quoted.\n<${tag}>\n${body}\n</${tag}>`;
 };
 
+const COMPACTION_HINT =
+  'Earlier context was compacted. To recover specific details from before the compaction, use session_search (in the current session it searches only compacted-away content), then session_read with session: "current" and from=<entry>.';
+
 const PAGE_RESERVE_BYTES = 2000;
 const PAGE_RESERVE_LINES = 20;
 const SEARCH_BODY_BYTES = 45_000;
@@ -192,5 +195,9 @@ export default function (pi: ExtensionAPI) {
       });
       return quotedText(transcript);
     },
+  });
+
+  pi.on("session_compact", () => {
+    pi.sendMessage({ customType: "session-history-compaction-hint", content: COMPACTION_HINT, display: false });
   });
 }
