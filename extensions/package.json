@@ -16,15 +16,15 @@
     "pi-web-access": "0.48.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.6.0",
-    "@earendil-works/pi-coding-agent": "1.6.0",
+    "@earendil-works/pi-ai": "1.6.1",
+    "@earendil-works/pi-coding-agent": "1.6.1",
     "@earendil-works/pi-server": "1.1.0",
-    "@earendil-works/pi-tui": "1.6.0",
-    "@effect/tsgo": "0.73.2",
-    "@oxlint/plugins": "1.94.0",
-    "@types/node": "26.6.6",
-    "oxlint": "1.94.0",
-    "oxlint-tsgolint": "7.0.2007",
+    "@earendil-works/pi-tui": "1.6.1",
+    "@effect/tsgo": "0.73.4",
+    "@oxlint/plugins": "1.95.0",
+    "@types/node": "26.6.10",
+    "oxlint": "1.95.0",
+    "oxlint-tsgolint": "7.0.2008",
     "typebox": "1.4.7",
     "typescript": "7.0.2"
   },
