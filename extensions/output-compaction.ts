@@ -32,6 +32,19 @@ const lines = (render: (width: number) => string[]): Component => ({
 
 const blank = lines(() => [""]);
 
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+const isBlankLine = (line: string) => line.replace(ANSI_SGR, "").trim() === "";
+
+// Some renderers (edit) wrap the call in a padded box and append a diff after a blank row. The compact
+// row keeps only the first block of text.
+const firstBlock = (rows: readonly string[]): string[] => {
+  const start = rows.findIndex((row) => !isBlankLine(row));
+  if (start === -1) return [];
+  const rest = rows.slice(start);
+  const end = rest.findIndex(isBlankLine);
+  return rest.slice(0, end === -1 ? undefined : end);
+};
+
 const background = (context: RenderContext, theme: Theme) => {
   const color = context.isPartial ? "toolPendingBg" : context.isError ? "toolErrorBg" : "toolSuccessBg";
   return (text: string) => theme.bg(color, text);
@@ -118,14 +131,19 @@ export default function (pi: ExtensionAPI) {
 
     const renderCall: CallRenderer = (args, theme, context) => {
       const state = rowState(context);
+      state.compact = isCompact(context);
+      // Some renderers (edit) paint their own padded background. The compact shell supplies it instead.
+      const callTheme = state.compact
+        ? Object.create(theme, { bg: { value: (_color: string, text: string) => text } })
+        : theme;
+      const callContext = state.compact ? { ...context, outputPad: 0 } : context;
       state.call = base.renderCall
-        ? base.renderCall(args, theme, { ...context, lastComponent: state.call })
+        ? base.renderCall(args, callTheme, { ...callContext, lastComponent: state.call })
         : new Text(theme.fg("toolTitle", theme.bold(toolName)), 0, 0);
       const call = state.call;
-      state.compact = isCompact(context);
 
       if (state.compact) {
-        return shell(context, theme, [lines((width) => call.render(width).slice(0, COMPACT_CALL_LINES))]);
+        return shell(context, theme, [lines((width) => firstBlock(call.render(width)).slice(0, COMPACT_CALL_LINES))]);
       }
       return shell(context, theme, [blank, call, lines(() => (state.hasResult ? [] : [""]))]);
     };
